@@ -12,6 +12,10 @@ import session from "express-session";
 import bodyParser from "body-parser";
 import adminRouter from "./routes/admin.route.js";
 import businessRouter from "./routes/business.route.js";
+import openaiRouter from "./routes/openai.route.js";
+import subscriptionRouter from "./routes/subscription.routes.js";
+import webhookRouter from "./routes/webhook.routes.js";
+import path from "path";
 const app = express(),
   attachCoreMiddlewares = async () => {
     checkEnv();
@@ -24,6 +28,7 @@ const app = express(),
     //   expressStatic(ConstHelper.PATHS.PATH_LOGO_IMAGE)
     // );
     app.use("views", expressStatic(ConstHelper.PATHS.PATH_VIEW));
+    app.use("/chatbot.js", express.static(path.join(__dirname, "static/chatbot.js")));
     app.set("view engine", "jade");
     // app.get("/", function (req, res) {
     //   var options = { root: __dirname };
@@ -51,6 +56,9 @@ const app = express(),
   attachRouters = async () => {
     app.use(ConstHelper.ROUTES.ROUTE_ADMIN, adminRouter);
     app.use(ConstHelper.ROUTES.ROUTE_BUSINESSS, businessRouter);
+    app.use('/chatbot', openaiRouter);
+    app.use('/subscription', subscriptionRouter);
+    app.use('/webhook', webhookRouter);
   },
   connectToDatabase = async () => {
     connection.on(

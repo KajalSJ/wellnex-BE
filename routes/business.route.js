@@ -2,6 +2,7 @@ import { Router } from "express";
 import ConstHelper from "../helpers/message.helper.js";
 import businessDomain from "../domains/business.domain.js";
 import upload from "../middlewares/upload.middleware.js";
+import businessModel from "../models/business.model.js";
 
 const businessRouter = Router(),
   {
@@ -15,12 +16,13 @@ const businessRouter = Router(),
     addBusinessKeywords,
     sendVerificationEmail,
     verifyEmailByLink,
-    updateBusinessDetail, 
-    getBusinessDetail, 
+    updateBusinessDetail,
+    getBusinessDetail,
     updateOneKeyWord,
     getKeywords,
     deleteKeyword,
     deleteAllKeywords,
+    setupChatbot,
   } = businessDomain,
   {
     ROUTES: {
@@ -41,6 +43,7 @@ const businessRouter = Router(),
         GET_KEYWORDS,
         DELETE_KEYWORD,
         DELETE_ALL_KEYWORDS,
+        SETUP_CHATBOT,
       },
     },
   } = ConstHelper;
@@ -61,6 +64,6 @@ businessRouter.put(UPDATE_ONE_KEYWORD, updateOneKeyWord);
 businessRouter.get(GET_KEYWORDS, getKeywords);
 businessRouter.delete(DELETE_KEYWORD, deleteKeyword);
 businessRouter.delete(DELETE_ALL_KEYWORDS, deleteAllKeywords);
-
+businessRouter.post(SETUP_CHATBOT, setupChatbot);
 
 export default businessRouter;

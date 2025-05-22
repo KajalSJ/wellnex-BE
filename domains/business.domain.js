@@ -15,6 +15,8 @@ import jwtMiddleware from "../middlewares/jwt.middleware.js";
 import upload from "../middlewares/upload.middleware.js";
 import path from 'path';
 import fs from 'fs';
+import config from "../configurations/app.config.js";
+import businessModel from "../models/business.model.js";
 
 const { send200, send401, send400 } = responseHelper,
     { createBusiness, updateBusiness, retriveBusiness } = businessService,
@@ -60,10 +62,47 @@ const businessSignup = [
                         email: email.toLowerCase(),
                         contact_name, website_url, instagram_url,
                     });
+                    let update_Business = await updateBusiness(
+                        {
+                            _id: create_Business._id,
+                        },
+                        {
+                            loginToken: generateToken({
+                                _id: create_Business._id,
+                                firstName: create_Business.name,
+                                email: create_Business.email.toLowerCase(),
+                                roles: create_Business.roles[0],
+                                createdAt: create_Business.createdAt,
+                                updatedAt: create_Business.updatedAt,
+                            }),
+                            loginTime: new Date(moment().utc()),
+                        }
+                    );
+
+                    // Send welcome email
+                    const loginLink = `${config.APP_URL}/#/signin`;
+                    await sendingMail({
+                        email: create_Business.email,
+                        sub: "Welcome to WellnexAI! Your Dashboard Awaits",
+                        text: `Hi ${create_Business.name},\n\nWelcome to WellnexAI, your new 24/7 AI-powered assistant for client consultations.\n\nYou can now log in, personalize your chatbot, and begin turning website visitors into leads.\n\nStart Here: ${loginLink}\n\nNeed help? Reply to this email or visit our Help Center.\n\nLet's scale your brand — together.\n\n— The WellnexAI Team`,
+                        html: `
+                            <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+                                <h2 style="color: #333;">Welcome to WellnexAI! Your Dashboard Awaits</h2>
+                                <p>Hi ${create_Business.name},</p>
+                                <p>Welcome to WellnexAI, your new 24/7 AI-powered assistant for client consultations.</p>
+                                <p>You can now log in, personalize your chatbot, and begin turning website visitors into leads.</p>
+                                <p><a href="${loginLink}" style="display: inline-block; padding: 10px 20px; background-color: #007bff; color: white; text-decoration: none; border-radius: 5px;">Start Here</a></p>
+                                <p>Need help? Reply to this email or visit our Help Center.</p>
+                                <p>Let's scale your brand — together.</p>
+                                <p>— The WellnexAI Team</p>
+                            </div>
+                        `
+                    });
+
                     send200(res, {
                         status: true,
                         message: "Register successfully",
-                        data: create_Business,
+                        data: update_Business,
                     });
                 }
             } catch (err) {
@@ -190,7 +229,7 @@ const businessSignup = [
                         )
                         send200(res, {
                             status: true,
-                            message: "Reset Password link has been sent to your email",
+                            message: "Reset Password is token generated.",
                             data: update_Business,
                         });
                     }
@@ -524,11 +563,13 @@ const businessSignup = [
                             id: existingBusiness._id,
                             email: existingBusiness.email,
                         });
+                        let verifyLink = `${config.APP_URL}/verifyEmail/${existingBusiness._id}?token=${verificationToken}`;
+                        console.log(verifyLink, "verifyLink");
                         await sendingMail({
                             email: existingBusiness.email,
                             sub: "Verify your email",
                             text: "Verify your email",
-                            html: `<p>Verify your email by clicking on the link below</p><a href="http://localhost:3000/verifyEmail/${existingBusiness._id}?token=${verificationToken}">Verify email</a>`,
+                            html: `<p>Verify your email by clicking on the link below</p><a href="${verifyLink}">Verify email</a>`,
                         })
                         await updateBusiness(
                             {
@@ -585,6 +626,7 @@ const businessSignup = [
                                 isEmailVerified: true,
                             }
                         )
+
                         return send200(res, {
                             status: true,
                             message: "Email has been verified successfully",
@@ -765,7 +807,6 @@ const businessSignup = [
                         const keywordIndex = existingBusiness.keywords.findIndex(
                             (keyword) => keyword._id.toString() === keywords._id
                         );
-                        console.log(keywordIndex, existingBusiness.keywords);
 
                         if (keywordIndex === -1) {
                             send400(res, {
@@ -877,6 +918,61 @@ const businessSignup = [
             }
         }
     ],
+    setupChatbot = [
+        jwtAuthGuard,
+        async (req, res) => {
+            try {
+                const { questions, keywords, services } = req.body;
+                const businessId = req.params.businessId;
+
+                // First get the business to ensure we have the correct ID
+                const existingBusiness = await businessModel.findById(businessId);
+                if (!existingBusiness) {
+                    return res.status(404).json({ error: "Business not found" });
+                }
+
+                const business = await businessModel.findByIdAndUpdate(
+                    businessId,
+                    {
+                        questions,
+                        keywords,
+                        services,
+                    },
+                    { new: true, upsert: true }
+                );
+
+                // Send embed code email
+                const embedCode = `<script src="https://embed.wellnexai.com/chatbot.js?biz=${existingBusiness._id}"></script>`;
+                console.log('Sending embed code email with code:', embedCode); // Debug log
+
+                await sendingMail({
+                    email: existingBusiness.email,
+                    sub: "Your WellnexAI chatbot code is ready",
+                    text: `Hi ${existingBusiness.name},\n\nYour chatbot is live!\n\nHere's your unique chatbot embed code — copy and paste it into your site:\n\n${embedCode}\n\nWhere to place it: before the closing </body> tag\n\nNeed help? Visit our support portal or reply to this email.\n\nLet's convert more visitors into bookings!\n\n– The WellnexAI Team`,
+                    html: `
+                        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+                            <h2 style="color: #333;">Your WellnexAI chatbot code is ready</h2>
+                            <p>Hi ${existingBusiness.name},</p>
+                            <p>Your chatbot is live!</p>
+                            <p>Here's your unique chatbot embed code — copy and paste it into your site:</p>
+                            <div style="background-color: #f5f5f5; padding: 15px; border-radius: 5px; margin: 20px 0;">
+                                <code style="font-family: monospace; word-break: break-all;">${embedCode}</code>
+                            </div>
+                            <p><strong>Where to place it:</strong> before the closing &lt;/body&gt; tag</p>
+                            <p>Need help? Visit our support portal or reply to this email.</p>
+                            <p>Let's convert more visitors into bookings!</p>
+                            <p>– The WellnexAI Team</p>
+                        </div>
+                    `
+                });
+
+                res.json({ message: "Chatbot config saved successfully", business });
+            } catch (err) {
+                console.error("Setup Chatbot Error:", err);
+                res.status(500).json({ error: "Internal server error" });
+            }
+        }
+    ],
     businessDomain = {
         businessSignup,
         businessSignin,
@@ -894,6 +990,7 @@ const businessSignup = [
         getKeywords,
         deleteKeyword,
         deleteAllKeywords,
+        setupChatbot,
     };
 
 export default businessDomain;

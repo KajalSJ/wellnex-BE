@@ -22,9 +22,8 @@ const verifyToken = async (req, res, next) => {
     } else {
       const token = req.header("authorization").split("Bearer ");
       req.user = jwtVerify(token[1]).sub;
-      let checkPatient = await retriveBusiness({ _id: req.user._id });
+      let checkBusiness = await retriveBusiness({ _id: req.user._id });
       let checkAdmin = await retriveAdmin({ _id: req.user._id });
-      console.log(checkAdmin, checkPatient);
       
       if (checkAdmin) {
         if (checkAdmin.loginToken == null) {
@@ -38,8 +37,8 @@ const verifyToken = async (req, res, next) => {
           // req.timezone = checkAdmin.timezone;
           next();
         }
-      } else if (checkPatient) {
-        if (checkPatient.loginToken == null) {
+      } else if (checkBusiness) {
+        if (checkBusiness.loginToken == null) {
           send401(res, {
             status: false,
             message: INV_TOKEN,

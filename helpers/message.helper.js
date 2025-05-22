@@ -48,8 +48,8 @@ const ConstHelper = {
     PATH_VIEW: "views",
   },
   URLS: {
-    DEV_APP_URL: "http://localhost:3000",
-    PROD_APP_URL: "http://3.213.224.73:3000",
+    DEV_APP_URL: "http://localhost",
+    PROD_APP_URL: "https://wellnexai.com",
   },
   ROUTES: {
     // Core Base Routes
@@ -85,6 +85,7 @@ const ConstHelper = {
       GET_KEYWORDS:"/getKeywords",
       DELETE_KEYWORD:"/deleteKeyword",
       DELETE_ALL_KEYWORDS:"/deleteAllKeywords",
+      SETUP_CHATBOT:"/:businessId/setup-chatbot",
     }
   },
 };
