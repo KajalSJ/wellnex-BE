@@ -1,6 +1,7 @@
 import { OpenAI } from "openai";
 import businessService from "../services/business.service.js";
 import responseHelper from "../helpers/response.helper.js";
+import Subscription from "../models/subscription.model.js";
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 const { retriveBusiness } = businessService,
@@ -61,12 +62,25 @@ export const getChatBotDetail = async (req, res) => {
             _id: businessId,
         });
         if (!existingBusiness) {
-            send400(res, {
+            return send400(res, {
                 status: false,
                 message: "Email not registered",
                 data: null,
             });
         } else {
+            // check if this business have valid subscription
+            const subscription = await Subscription.findOne({
+                businessId,
+                status: 'active',
+                currentPeriodEnd: { $gt: new Date() }
+            });
+            if (!subscription) {
+                return send400(res, {
+                    status: false,
+                    message: "Business does not have a valid subscription",
+                    data: null,
+                });
+            }
             send200(res, {
                 status: true,
                 message: "Business details fetched successfully",

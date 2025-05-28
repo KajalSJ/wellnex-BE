@@ -3,7 +3,7 @@ import mongoose from 'mongoose';
 const subscriptionSchema = new mongoose.Schema({
     userId: {
         type: mongoose.Schema.Types.ObjectId,
-        ref: 'User',
+        ref: 'Business',
         required: true
     },
     stripeCustomerId: {
@@ -55,6 +55,26 @@ const subscriptionSchema = new mongoose.Schema({
     paymentMethodId: {
         type: String,
         required: true
+    },
+    hasReceivedSpecialOffer: {
+        type: Boolean,
+        default: false
+    },
+    specialOfferApplied: {
+        type: Boolean,
+        default: false
+    },
+    specialOfferPrice: {
+        type: Number,
+        default: null
+    },
+    specialOfferExpiry: {
+        type: Date,
+        default: null
+    },
+    isSpecialOffer: {
+        type: Boolean,
+        default: false
     }
 }, {
     timestamps: true

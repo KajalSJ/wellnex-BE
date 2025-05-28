@@ -1,8 +1,6 @@
 import { Router } from "express";
 import ConstHelper from "../helpers/message.helper.js";
 import businessDomain from "../domains/business.domain.js";
-import upload from "../middlewares/upload.middleware.js";
-import businessModel from "../models/business.model.js";
 
 const businessRouter = Router(),
   {
@@ -16,13 +14,22 @@ const businessRouter = Router(),
     addBusinessKeywords,
     sendVerificationEmail,
     verifyEmailByLink,
+    checkEmailVerified,
     updateBusinessDetail,
     getBusinessDetail,
     updateOneKeyWord,
+    updateOneService,
     getKeywords,
+    getServicesList,
     deleteKeyword,
     deleteAllKeywords,
+    addBusinessQuestions,
+    getQuestions,
+    updateOneQuestion,
+    deleteQuestion,
+    deleteAllQuestions,
     setupChatbot,
+    getBusinessEmail,
   } = businessDomain,
   {
     ROUTES: {
@@ -37,12 +44,20 @@ const businessRouter = Router(),
         ADD_BUSINESS_KEYWORDS,
         SEND_VERIFICATION_EMAIL,
         VERIFY_EMAIL_BY_LINK,
+        CHECK_EMAIL_VERIFIED,
         UPDATE_BUSINESS_DETAIL,
         GET_BUSINESS_DETAIL,
         UPDATE_ONE_KEYWORD,
+        UPDATE_ONE_SERVICE,
+        GET_SERVICES_LIST,
         GET_KEYWORDS,
         DELETE_KEYWORD,
         DELETE_ALL_KEYWORDS,
+        ADD_BUSINESS_QUESTIONS,
+        GET_QUESTIONS,
+        UPDATE_ONE_QUESTION,
+        DELETE_QUESTION,
+        DELETE_ALL_QUESTIONS,
         SETUP_CHATBOT,
       },
     },
@@ -58,12 +73,21 @@ businessRouter.post(SET_BUSINESS_THEME_COLOR, setBusinessThemeColor);
 businessRouter.post(ADD_BUSINESS_KEYWORDS, addBusinessKeywords);
 businessRouter.post(SEND_VERIFICATION_EMAIL, sendVerificationEmail);
 businessRouter.post(VERIFY_EMAIL_BY_LINK, verifyEmailByLink);
+businessRouter.get(CHECK_EMAIL_VERIFIED, checkEmailVerified);
 businessRouter.put(UPDATE_BUSINESS_DETAIL, updateBusinessDetail);
-businessRouter.get(GET_BUSINESS_DETAIL, getBusinessDetail);
+businessRouter.post(GET_BUSINESS_DETAIL, getBusinessDetail);
 businessRouter.put(UPDATE_ONE_KEYWORD, updateOneKeyWord);
-businessRouter.get(GET_KEYWORDS, getKeywords);
+businessRouter.put(UPDATE_ONE_SERVICE, updateOneService);
+businessRouter.post(GET_KEYWORDS, getKeywords);
+businessRouter.post(GET_SERVICES_LIST, getServicesList);
 businessRouter.delete(DELETE_KEYWORD, deleteKeyword);
 businessRouter.delete(DELETE_ALL_KEYWORDS, deleteAllKeywords);
+businessRouter.post(ADD_BUSINESS_QUESTIONS, addBusinessQuestions);
+businessRouter.post(GET_QUESTIONS, getQuestions);
+businessRouter.put(UPDATE_ONE_QUESTION, updateOneQuestion);
+businessRouter.delete(DELETE_QUESTION, deleteQuestion);
+businessRouter.delete(DELETE_ALL_QUESTIONS, deleteAllQuestions);
 businessRouter.post(SETUP_CHATBOT, setupChatbot);
+businessRouter.post("/get-business-email", getBusinessEmail);
 
 export default businessRouter;

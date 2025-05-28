@@ -12,10 +12,17 @@ const activeSessions = new Map();
 openaiRouter.post('/start-chat', async (req, res) => {
   try {
     const { businessId } = req.body;
-    const business = await businessModel.findById(businessId);
-    
+    const business = await businessModel.findById({ _id: businessId });
+
     if (!business || !business.questions || business.questions.length === 0) {
-      return res.status(404).json({ error: "Business or questions not found" });
+      return res.status(200).json({
+        status: true,
+        message: "Thank you for your interest! Our chatbot is currently being customized to better serve you. Please check back soon or contact us directly for immediate assistance.",
+        data: {
+          isSetupIncomplete: true,
+          contactInfo: business?.email || "support@wellnexai.com"
+        }
+      });
     }
 
     // Create a new session
@@ -45,7 +52,7 @@ openaiRouter.post('/submit-answer', async (req, res) => {
   try {
     const { sessionId, answer } = req.body;
     const session = activeSessions.get(sessionId);
-    
+
     if (!session) {
       return res.status(404).json({ error: "Chat session not found" });
     }
@@ -94,7 +101,7 @@ openaiRouter.post('/submit-answer', async (req, res) => {
     // If we've answered all questions, return the recommendation
     if (session.currentQuestionIndex >= session.questions.length) {
       const prompt = buildChatPrompt(session.answers, session.questions, session.services);
-      
+
       const aiResponse = await openai.chat.completions.create({
         model: "gpt-3.5-turbo",
         messages: [{ role: "user", content: prompt }],

@@ -17,6 +17,8 @@ import path from 'path';
 import fs from 'fs';
 import config from "../configurations/app.config.js";
 import businessModel from "../models/business.model.js";
+import adminService from "../services/admin.service.js";
+import { getActiveSubscriptionDetails } from "../services/subscription.service.js";
 
 const { send200, send401, send400 } = responseHelper,
     { createBusiness, updateBusiness, retriveBusiness } = businessService,
@@ -24,9 +26,7 @@ const { send200, send401, send400 } = responseHelper,
     { sendingMail } = awsEmailExternal,
     { generateToken, verifyToken } = helpers,
     { verifyToken: jwtAuthGuard } = jwtMiddleware,
-    {
-        MESSAGES: { JWT_EXPIRED_ERR },
-    } = ConstHelper;
+    { updateAdmin, retriveAdmin } = adminService;
 
 const businessSignup = [
     signupValidator.name,
@@ -35,7 +35,7 @@ const businessSignup = [
     async (req, res) => {
         const errors = validationThrowsError(req);
         if (errors.length)
-            send400(res, {
+            return send400(res, {
                 status: false,
                 message: errors[0]?.msg,
                 data: null,
@@ -49,7 +49,7 @@ const businessSignup = [
                     email: email.toLowerCase(),
                 });
                 if (existingBusiness) {
-                    send400(res, {
+                    return send400(res, {
                         status: false,
                         message: "Email already exist",
                         data: null,
@@ -121,7 +121,7 @@ const businessSignup = [
         async (req, res) => {
             const errors = validationThrowsError(req);
             if (errors.length)
-                send400(res, {
+                return send400(res, {
                     status: false,
                     message: errors[0]?.msg,
                     data: null,
@@ -131,24 +131,60 @@ const businessSignup = [
                     body: { email, password },
                 } = req;
                 try {
+
                     let existingBusiness = await retriveBusiness({
                         email: email.toLowerCase(),
                     });
                     if (!existingBusiness) {
-                        send400(res, {
-                            status: false,
-                            message: "Email not registered",
-                            data: null,
+                        let existingAdmin = await retriveAdmin({
+                            email: email.toLowerCase(),
                         });
+                        if (!existingAdmin) {
+                            return send400(res, {
+                                status: false,
+                                message: "Email not registered",
+                                data: null,
+                            });
+                        } else {
+                            if (!(await bcrypt.compare(password, existingAdmin.password)))
+                                return send400(res, {
+                                    status: false,
+                                    message: "Invalid password",
+                                    data: null,
+                                });
+                            else {
+                                let update_Admin = await updateAdmin(
+                                    {
+                                        _id: existingAdmin._id,
+                                    },
+                                    {
+                                        loginToken: generateToken({
+                                            _id: existingAdmin._id,
+                                            firstName: existingAdmin.name,
+                                            email: existingAdmin.email.toLowerCase(),
+                                            roles: existingAdmin.roles[0],
+                                            createdAt: existingAdmin.createdAt,
+                                            updatedAt: existingAdmin.updatedAt,
+                                        }),
+                                        loginTime: new Date(moment().utc()),
+                                    }
+                                );
+                                send200(res, {
+                                    status: true,
+                                    message: "Admin Login Successfully",
+                                    data: update_Admin,
+                                });
+                            }
+                        }
                     } else {
                         if (!(await bcrypt.compare(password, existingBusiness.password)))
-                            send400(res, {
+                            return send400(res, {
                                 status: false,
                                 message: "Invalid password",
                                 data: null,
                             });
                         else if (!existingBusiness.isEmailVerified)
-                            send400(res, {
+                            return send400(res, {
                                 status: false,
                                 message: "Email not verified",
                                 data: null,
@@ -192,7 +228,7 @@ const businessSignup = [
         async (req, res) => {
             const errors = validationThrowsError(req);
             if (errors.length)
-                send400(res, {
+                return send400(res, {
                     status: false,
                     message: errors[0]?.msg,
                     data: null,
@@ -206,7 +242,7 @@ const businessSignup = [
                         email: email.toLowerCase(),
                     });
                     if (!existingBusiness) {
-                        send400(res, {
+                        return send400(res, {
                             status: false,
                             message: "Email not registered",
                             data: null,
@@ -248,7 +284,7 @@ const businessSignup = [
         async (req, res) => {
             const errors = validationThrowsError(req);
             if (errors.length)
-                send400(res, {
+                return send400(res, {
                     status: false,
                     message: errors[0]?.msg,
                     data: null,
@@ -263,14 +299,14 @@ const businessSignup = [
                         email: email.toLowerCase(),
                     });
                     if (!existingBusiness) {
-                        send400(res, {
+                        return send400(res, {
                             status: false,
                             message: "Email not registered",
                             data: null,
                         });
                     } else {
                         if (existingBusiness.resetPasswordToken != token) {
-                            send400(res, {
+                            return send400(res, {
                                 status: false,
                                 message: "Invalid Token",
                                 data: null,
@@ -364,7 +400,7 @@ const businessSignup = [
         async (req, res) => {
             const errors = validationThrowsError(req);
             if (errors.length)
-                send400(res, {
+                return send400(res, {
                     status: false,
                     message: errors[0]?.msg,
                     data: null,
@@ -378,7 +414,7 @@ const businessSignup = [
                         _id: businessId,
                     });
                     if (!existingBusiness) {
-                        send400(res, {
+                        return send400(res, {
                             status: false,
                             message: "Email not registered",
                             data: null,
@@ -419,7 +455,7 @@ const businessSignup = [
         async (req, res) => {
             const errors = validationThrowsError(req);
             if (errors.length)
-                send400(res, {
+                return send400(res, {
                     status: false,
                     message: errors[0]?.msg,
                     data: null,
@@ -433,7 +469,7 @@ const businessSignup = [
                         _id: businessId,
                     });
                     if (!existingBusiness) {
-                        send400(res, {
+                        return send400(res, {
                             status: false,
                             message: "Email not registered",
                             data: null,
@@ -470,7 +506,7 @@ const businessSignup = [
         async (req, res) => {
             const errors = validationThrowsError(req);
             if (errors.length)
-                send400(res, {
+                return send400(res, {
                     status: false,
                     message: errors[0]?.msg,
                     data: null,
@@ -504,7 +540,7 @@ const businessSignup = [
                         _id: businessId,
                     });
                     if (!existingBusiness) {
-                        send400(res, {
+                        return send400(res, {
                             status: false,
                             message: "Email not registered",
                             data: null,
@@ -539,7 +575,7 @@ const businessSignup = [
         async (req, res) => {
             const errors = validationThrowsError(req);
             if (errors.length)
-                send400(res, {
+                return send400(res, {
                     status: false,
                     message: errors[0]?.msg,
                     data: null,
@@ -553,7 +589,7 @@ const businessSignup = [
                         _id: businessId,
                     });
                     if (!existingBusiness) {
-                        send400(res, {
+                        return send400(res, {
                             status: false,
                             message: "Email not registered",
                             data: null,
@@ -567,9 +603,20 @@ const businessSignup = [
                         console.log(verifyLink, "verifyLink");
                         await sendingMail({
                             email: existingBusiness.email,
-                            sub: "Verify your email",
-                            text: "Verify your email",
-                            html: `<p>Verify your email by clicking on the link below</p><a href="${verifyLink}">Verify email</a>`,
+                            sub: "Verify your email to access WellnexAI!",
+                            text: `Hi ${existingBusiness.name},\n\nWelcome to WellnexAI, your new 24/7 AI-powered assistant for client consultations.\n\nPlease click on the link below to verify your email.\n\n— The WellnexAI Team`,
+                            html: `
+                                <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+                                    <h2 style="color: #333;">Welcome to WellnexAI! Your Dashboard Awaits</h2>
+                                    <p>Hi ${existingBusiness.name},</p>
+                                    <p>Welcome to WellnexAI, your new 24/7 AI-powered assistant for client consultations.</p>
+                                    <p>Please click on the link below to verify your email.</p>
+                                    <p><a href="${verifyLink}" style="display: inline-block; padding: 10px 20px; background-color: #007bff; color: white; text-decoration: none; border-radius: 5px;">Verify Email</a></p>
+                                    <p>Need help? Reply to this email or visit our Help Center.</p>
+                                    <p>Let's scale your brand — together.</p>
+                                    <p>— The WellnexAI Team</p>
+                                </div>
+                            `
                         })
                         await updateBusiness(
                             {
@@ -599,7 +646,7 @@ const businessSignup = [
         async (req, res) => {
             const errors = validationThrowsError(req);
             if (errors.length)
-                send400(res, {
+                return send400(res, {
                     status: false,
                     message: errors[0]?.msg,
                     data: null,
@@ -649,13 +696,45 @@ const businessSignup = [
             }
         }
     ],
+    checkEmailVerified = [
+        jwtAuthGuard,
+        async (req, res) => {
+            const {
+                user: { _id: businessId },
+            } = req;
+            try {
+                let existingBusiness = await retriveBusiness({
+                    _id: businessId,
+                });
+                if (!existingBusiness) {
+                    return send400(res, {
+                        status: false,
+                        message: "Email not registered",
+                        data: null,
+                    });
+                } else {
+                    send200(res, {
+                        status: true,
+                        message: existingBusiness.isEmailVerified ? "Email verified" : "Email not verified",
+                        data: { isEmailVerified: existingBusiness.isEmailVerified },
+                    });
+                }
+            } catch (err) {
+                send401(res, {
+                    status: false,
+                    message: err.message,
+                    data: null,
+                });
+            }
+        }
+    ],
     updateBusinessDetail = [
         jwtAuthGuard,
         upload.single("logo"),
         async (req, res) => {
             const errors = validationThrowsError(req);
             if (errors.length)
-                send400(res, {
+                return send400(res, {
                     status: false,
                     message: errors[0]?.msg,
                     data: null,
@@ -669,7 +748,7 @@ const businessSignup = [
                         _id: businessId,
                     });
                     if (!existingBusiness) {
-                        send400(res, {
+                        return send400(res, {
                             status: false,
                             message: "Email not registered",
                             data: null,
@@ -725,16 +804,18 @@ const businessSignup = [
                     _id: businessId,
                 });
                 if (!existingBusiness) {
-                    send400(res, {
+                    return send400(res, {
                         status: false,
                         message: "Email not registered",
                         data: null,
                     });
                 } else {
+                    // GET SUBSCRIPTION DETAIL
+                    const subscriptionDetail = await getActiveSubscriptionDetails(existingBusiness._id);
                     send200(res, {
                         status: true,
                         message: "Business details fetched successfully",
-                        data: existingBusiness,
+                        data: { ...existingBusiness._doc, subscriptionDetail },
                     });
                 }
             } catch (err) {
@@ -757,7 +838,7 @@ const businessSignup = [
                     _id: businessId,
                 });
                 if (!existingBusiness) {
-                    send400(res, {
+                    return send400(res, {
                         status: false,
                         message: "Email not registered",
                         data: null,
@@ -783,7 +864,7 @@ const businessSignup = [
         async (req, res) => {
             const errors = validationThrowsError(req);
             if (errors.length)
-                send400(res, {
+                return send400(res, {
                     status: false,
                     message: errors[0]?.msg,
                     data: null,
@@ -798,7 +879,7 @@ const businessSignup = [
                         _id: businessId,
                     });
                     if (!existingBusiness) {
-                        send400(res, {
+                        return send400(res, {
                             status: false,
                             message: "Business not found",
                             data: null,
@@ -809,7 +890,7 @@ const businessSignup = [
                         );
 
                         if (keywordIndex === -1) {
-                            send400(res, {
+                            return send400(res, {
                                 status: false,
                                 message: "Keyword not found",
                                 data: null,
@@ -838,6 +919,85 @@ const businessSignup = [
             }
         }
     ],
+    updateOneService = [
+        jwtAuthGuard,
+        async (req, res) => {
+            const {
+                body: { serviceId, businessId },
+            } = req;
+            try {
+                let existingBusiness = await retriveBusiness({
+                    _id: businessId,
+                });
+                if (!existingBusiness) {
+                    return send400(res, {
+                        status: false,
+                        message: "Business not found",
+                        data: null,
+                    });
+                } else {
+                    const serviceIndex = existingBusiness.services.findIndex(
+                        (service) => service._id.toString() === serviceId
+                    );
+                    if (serviceIndex === -1) {
+                        return send400(res, {
+                            status: false,
+                            message: "Service not found",
+                            data: null,
+                        });
+                    }
+                    existingBusiness.services[serviceIndex] = {
+                        ...existingBusiness.services[serviceIndex],
+                        ...req.body,
+                    };
+                    await existingBusiness.save();
+                    send200(res, {
+                        status: true,
+                        message: "Service updated successfully",
+                        data: existingBusiness.services[serviceIndex],
+                    });
+                }
+            } catch (err) {
+                send401(res, {
+                    status: false,
+                    message: err.message,
+                    data: null,
+                });
+            }
+        }
+    ],
+    getServicesList = [
+        jwtAuthGuard,
+        async (req, res) => {
+            const {
+                body: { businessId },
+            } = req;
+            try {
+                let existingBusiness = await retriveBusiness({
+                    _id: businessId,
+                });
+                if (!existingBusiness) {
+                    return send400(res, {
+                        status: false,
+                        message: "Business not found",
+                        data: null,
+                    });
+                } else {
+                    send200(res, {
+                        status: true,
+                        message: "Services fetched successfully",
+                        data: existingBusiness.services,
+                    });
+                }
+            } catch (err) {
+                send401(res, {
+                    status: false,
+                    message: err.message,
+                    data: null,
+                });
+            }
+        }
+    ],
     deleteKeyword = [
         jwtAuthGuard,
         async (req, res) => {
@@ -850,7 +1010,7 @@ const businessSignup = [
                     _id: businessId,
                 });
                 if (!existingBusiness) {
-                    send400(res, {
+                    return send400(res, {
                         status: false,
                         message: "Business not found",
                         data: null,
@@ -860,7 +1020,7 @@ const businessSignup = [
                         (keyword) => keyword._id.toString() === keywordId
                     );
                     if (keywordIndex === -1) {
-                        send400(res, {
+                        return send400(res, {
                             status: false,
                             message: "Keyword not found",
                             data: null,
@@ -895,7 +1055,7 @@ const businessSignup = [
                     _id: businessId,
                 });
                 if (!existingBusiness) {
-                    send400(res, {
+                    return send400(res, {
                         status: false,
                         message: "Business not found",
                         data: null,
@@ -918,8 +1078,243 @@ const businessSignup = [
             }
         }
     ],
-    setupChatbot = [
+
+    addBusinessQuestions = [
         jwtAuthGuard,
+        async (req, res) => {
+            const errors = validationThrowsError(req);
+            if (errors.length)
+                return send400(res, {
+                    status: false,
+                    message: errors[0]?.msg,
+                    data: null,
+                });
+            else {
+                const {
+                    body: { questions, businessId },
+                } = req;
+                // Validate questions array
+                if (!questions || !Array.isArray(questions)) {
+                    return send400(res, {
+                        status: false,
+                        message: "Questions must be an array",
+                        data: null,
+                    });
+                }
+
+                try {
+                    let existingBusiness = await retriveBusiness({
+                        _id: businessId,
+                    });
+                    if (!existingBusiness) {
+                        return send400(res, {
+                            status: false,
+                            message: "Business not found",
+                            data: null,
+                        });
+                    } else {
+                        const update_Business = await updateBusiness(
+                            {
+                                _id: existingBusiness._id,
+                            },
+                            {
+                                $addToSet: { questions: { $each: questions } }
+                            }
+                        )
+                        send200(res, {
+                            status: true,
+                            message: "Business questions updated successfully",
+                            data: { questions: update_Business.questions },
+                        });
+                    }
+                } catch (err) {
+                    send401(res, {
+                        status: false,
+                        message: err.message,
+                        data: null,
+                    });
+                }
+            }
+        }
+    ],
+
+    getQuestions = [
+        jwtAuthGuard,
+        async (req, res) => {
+            const {
+                body: { businessId },
+            } = req;
+            try {
+                let existingBusiness = await retriveBusiness({
+                    _id: businessId,
+                });
+                if (!existingBusiness) {
+                    return send400(res, {
+                        status: false,
+                        message: "Business not found",
+                        data: null,
+                    });
+                } else {
+                    send200(res, {
+                        status: true,
+                        message: "Business questions fetched successfully",
+                        data: existingBusiness.questions,
+                    });
+                }
+            } catch (err) {
+                send401(res, {
+                    status: false,
+                    message: err.message,
+                    data: null,
+                });
+            }
+        }
+    ],
+
+    updateOneQuestion = [
+        jwtAuthGuard,
+        async (req, res) => {
+            const errors = validationThrowsError(req);
+            if (errors.length)
+                return send400(res, {
+                    status: false,
+                    message: errors[0]?.msg,
+                    data: null,
+                });
+            else {
+                const {
+                    body: { questions, businessId },
+                } = req;
+
+                try {
+                    let existingBusiness = await retriveBusiness({
+                        _id: businessId,
+                    });
+                    if (!existingBusiness) {
+                        return send400(res, {
+                            status: false,
+                            message: "Business not found",
+                            data: null,
+                        });
+                    } else {
+                        const questionIndex = existingBusiness.questions.findIndex(
+                            (question) => question._id.toString() === questions._id
+                        );
+
+                        if (questionIndex === -1) {
+                            return send400(res, {
+                                status: false,
+                                message: "Question not found",
+                                data: null,
+                            });
+                        } else {
+                            existingBusiness.questions[questionIndex] = {
+                                ...existingBusiness.questions[questionIndex],
+                                ...questions
+                            };
+                            await existingBusiness.save();
+                            send200(res, {
+                                status: true,
+                                message: "Question updated successfully",
+                                data: existingBusiness.questions[questionIndex],
+                            });
+                        }
+                    }
+                } catch (err) {
+                    send401(res, {
+                        status: false,
+                        message: err.message,
+                        data: null,
+                    });
+                }
+            }
+        }
+    ],
+
+    deleteQuestion = [
+        jwtAuthGuard,
+        async (req, res) => {
+            const {
+                body: { questionId, businessId },
+            } = req;
+
+            try {
+                let existingBusiness = await retriveBusiness({
+                    _id: businessId,
+                });
+                if (!existingBusiness) {
+                    return send400(res, {
+                        status: false,
+                        message: "Business not found",
+                        data: null,
+                    });
+                } else {
+                    const questionIndex = existingBusiness.questions.findIndex(
+                        (question) => question._id.toString() === questionId
+                    );
+                    if (questionIndex === -1) {
+                        return send400(res, {
+                            status: false,
+                            message: "Question not found",
+                            data: null,
+                        });
+                    } else {
+                        existingBusiness.questions.splice(questionIndex, 1);
+                        await existingBusiness.save();
+                        send200(res, {
+                            status: true,
+                            message: "Question deleted successfully",
+                            data: existingBusiness.questions,
+                        });
+                    }
+                }
+            } catch (err) {
+                send401(res, {
+                    status: false,
+                    message: err.message,
+                    data: null,
+                });
+            }
+        }
+    ],
+
+    deleteAllQuestions = [
+        jwtAuthGuard,
+        async (req, res) => {
+            const {
+                body: { businessId },
+            } = req;
+            try {
+                let existingBusiness = await retriveBusiness({
+                    _id: businessId,
+                });
+                if (!existingBusiness) {
+                    return send400(res, {
+                        status: false,
+                        message: "Business not found",
+                        data: null,
+                    });
+                } else {
+                    existingBusiness.questions = [];
+                    await existingBusiness.save();
+                    send200(res, {
+                        status: true,
+                        message: "Questions deleted successfully",
+                        data: existingBusiness.questions,
+                    });
+                }
+            } catch (err) {
+                send401(res, {
+                    status: false,
+                    message: err.message,
+                    data: null,
+                });
+            }
+        }
+    ],
+
+    setupChatbot = [
+        // jwtAuthGuard,
         async (req, res) => {
             try {
                 const { questions, keywords, services } = req.body;
@@ -942,7 +1337,7 @@ const businessSignup = [
                 );
 
                 // Send embed code email
-                const embedCode = `<script src="https://embed.wellnexai.com/chatbot.js?biz=${existingBusiness._id}"></script>`;
+                const embedCode = `&lt;script src="https://embed.wellnexai.com/chatbot.js" data-business-id="${existingBusiness._id}"&gt;&lt;/script&gt;`;
                 console.log('Sending embed code email with code:', embedCode); // Debug log
 
                 await sendingMail({
@@ -963,13 +1358,51 @@ const businessSignup = [
                             <p>Let's convert more visitors into bookings!</p>
                             <p>– The WellnexAI Team</p>
                         </div>
-                    `
+                    `,
+                    attachments: [{
+                        filename: 'How_to_Install.pdf',
+                        path: path.join(__dirname, '../public/How_to_Install.pdf')
+                    }]
                 });
 
                 res.json({ message: "Chatbot config saved successfully", business });
             } catch (err) {
                 console.error("Setup Chatbot Error:", err);
                 res.status(500).json({ error: "Internal server error" });
+            }
+        }
+    ],
+    getBusinessEmail = [
+        jwtAuthGuard,
+        async (req, res) => {
+            const {
+                body: { businessId },
+            } = req;
+            try {
+                let existingBusiness = await retriveBusiness({
+                    _id: businessId,
+                });
+                if (!existingBusiness) {
+                    return send400(res, {
+                        status: false,
+                        message: "Business not found",
+                        data: null,
+                    });
+                } else {
+                    send200(res, {
+                        status: true,
+                        message: "Business email fetched successfully",
+                        data: {
+                            email: existingBusiness.email
+                        },
+                    });
+                }
+            } catch (err) {
+                send401(res, {
+                    status: false,
+                    message: err.message,
+                    data: null,
+                });
             }
         }
     ],
@@ -983,14 +1416,23 @@ const businessSignup = [
         setBusinessThemeColor,
         sendVerificationEmail,
         verifyEmailByLink,
+        checkEmailVerified,
         updateBusinessDetail,
         getBusinessDetail,
         addBusinessKeywords,
         updateOneKeyWord,
+        updateOneService,
+        getServicesList,
         getKeywords,
         deleteKeyword,
         deleteAllKeywords,
+        addBusinessQuestions,
+        getQuestions,
+        updateOneQuestion,
+        deleteQuestion,
+        deleteAllQuestions,
         setupChatbot,
+        getBusinessEmail,
     };
 
 export default businessDomain;

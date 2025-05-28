@@ -12,14 +12,15 @@ import awsEmailExternal from "../externals/send.email.external.js";
 import jwtMiddleware from "../middlewares/jwt.middleware.js";
 import businessService from "../services/business.service.js";
 import upload from "../middlewares/upload.middleware.js";
+import { getAllActiveSubscriptions, getSubscriptionCountsHandler, getPaymentListHandler, updateSubscriptionStatusHandler, getActiveSubscriptionDetails } from "../services/subscription.service.js";
 
 const { send200, send401, send400 } = responseHelper,
   { createAdmin, updateAdmin, retriveAdmin } = adminService,
   { validationThrowsError } = validator,
   { sendingMail } = awsEmailExternal,
-  { verifyToken: jwtAuthGuard } = jwtMiddleware,
+  { verifyAdminToken: jwtAuthGuard } = jwtMiddleware,
   { generateToken, daysBetweenTwoDates } = helpers,
-  { retrieveAllBusiness } = businessService,
+  { retrieveAllBusiness, retriveBusiness } = businessService,
   {
     MESSAGES: { JWT_EXPIRED_ERR },
   } = ConstHelper;
@@ -168,29 +169,24 @@ const adminSignup = [
     async (req, res) => {
       try {
         const {
-          params: { _id },
-          user: { _id: businessId },
+          body: { businessId },
         } = req;
-        let existingAdmin = await retriveAdmin({
-          _id: businessId
+        let existingBusiness = await retriveBusiness({
+          _id: businessId,
         });
-        if (!existingAdmin) {
+        if (!existingBusiness) {
           send400(res, {
             status: false,
-            message: "Email not registered",
+            message: "Business not found",
             data: null,
           });
         } else {
-          const filter = { _id };
-          const sort = {}; // sort order
-          const limit = 1; // number of records to return
-          const offset = 0; // starting index of records to return
-          const select = ['name', 'email', 'contact_name', '_id', 'logo', "website_url", "instagram_url", "themeColor", "keywords", "isEmailVerified"]; // fields to include in the response
-          let businessDetail = await retrieveAllBusiness(filter, sort, limit, offset, select);
+          // GET SUBSCRIPTION DETAIL
+          const subscriptionDetail = await getActiveSubscriptionDetails(existingBusiness._id);
           send200(res, {
             status: true,
-            message: "Business Detail",
-            data: businessDetail,
+            message: "Business details fetched successfully",
+            data: { ...existingBusiness._doc, subscriptionDetail },
           });
         }
       } catch (err) {
@@ -202,11 +198,125 @@ const adminSignup = [
       }
     },
   ],
+  getActiveSubscriptions = [
+    jwtAuthGuard,
+    async (req, res) => {
+      try {
+        const filter = { /* your filter object */ };
+        const sort = { [req.query.sort]: Number(req.query.sort_order) }; // sort order
+        const limit = parseInt(req.query.limit) || 10; // number of records to return
+        const offset = parseInt(req.query.skip) || 0; // starting index of records to return
+
+        let subscriptions = await getAllActiveSubscriptions(filter, sort, limit, offset);
+        send200(res, {
+          status: true,
+          message: "Active Subscriptions List",
+          data: subscriptions,
+        });
+      } catch (err) {
+        send401(res, {
+          status: false,
+          message: err.message,
+          data: null,
+        });
+      }
+    },
+  ],
+  getSubscriptionCounts = [
+    jwtAuthGuard,
+    async (req, res) => {
+      try {
+        const counts = await getSubscriptionCountsHandler();
+        send200(res, {
+          status: true,
+          message: "Subscription Counts",
+          data: counts,
+        });
+      } catch (err) {
+        send401(res, {
+          status: false,
+          message: err.message,
+          data: null,
+        });
+      }
+    },
+  ],
+  updateSubscriptionStatus = [
+    jwtAuthGuard,
+    async (req, res) => {
+      try {
+        const { subscriptionId, status } = req.body;
+
+        if (!subscriptionId || !status) {
+          return send400(res, {
+            status: false,
+            message: "Subscription ID and status are required",
+            data: null
+          });
+        }
+
+        const updatedSubscription = await updateSubscriptionStatusHandler(subscriptionId, status);
+        send200(res, {
+          status: true,
+          message: "Subscription status updated successfully",
+          data: updatedSubscription
+        });
+      } catch (err) {
+        send401(res, {
+          status: false,
+          message: err.message,
+          data: null
+        });
+      }
+    }
+  ],
+  getPaymentList = [
+    jwtAuthGuard,
+    async (req, res) => {
+      try {
+        const filter = {};
+
+        // Add date range filter if provided
+        if (req.query.startDate && req.query.endDate) {
+          filter.created = {
+            gte: Math.floor(new Date(req.query.startDate).getTime() / 1000),
+            lte: Math.floor(new Date(req.query.endDate).getTime() / 1000)
+          };
+        }
+
+        // Add status filter if provided
+        if (req.query.status) {
+          filter.status = req.query.status;
+        }
+
+        const limit = parseInt(req.query.limit) || 10;
+        const offset = parseInt(req.query.skip) || 0;
+
+        const payments = await getPaymentListHandler(filter, limit, offset);
+        send200(res, {
+          status: true,
+          message: "Payment List",
+          data: payments,
+        });
+      } catch (err) {
+        send401(res, {
+          status: false,
+          message: err.message,
+          data: null,
+        });
+      }
+    },
+  ],
+
   adminDomain = {
     adminSignup,
     adminSignin,
     getBusinessList,
     getBusinessDetail,
+    getActiveSubscriptions,
+    getSubscriptionCounts,
+    getPaymentList,
+    updateSubscriptionStatus
   };
 
 export default adminDomain;

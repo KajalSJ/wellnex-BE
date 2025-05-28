@@ -15,7 +15,9 @@ import businessRouter from "./routes/business.route.js";
 import openaiRouter from "./routes/openai.route.js";
 import subscriptionRouter from "./routes/subscription.routes.js";
 import webhookRouter from "./routes/webhook.routes.js";
+import contactUsRouter from "./routes/contactUs.js";
 import path from "path";
+import currencyRouter from "./routes/currency.route.js";
 const app = express(),
   attachCoreMiddlewares = async () => {
     checkEnv();
@@ -59,6 +61,8 @@ const app = express(),
     app.use('/chatbot', openaiRouter);
     app.use('/subscription', subscriptionRouter);
     app.use('/webhook', webhookRouter);
+    app.use('/currency', currencyRouter);
+    app.use('/contact', contactUsRouter);
   },
   connectToDatabase = async () => {
     connection.on(
