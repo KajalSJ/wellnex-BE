@@ -70,17 +70,43 @@ export const getChatBotDetail = async (req, res) => {
         } else {
             // check if this business have valid subscription
             const subscription = await Subscription.findOne({
-                businessId,
-                status: 'active',
+                userId: businessId,
+                status: { $in: ['active', 'trialing'] },
                 currentPeriodEnd: { $gt: new Date() }
             });
-            if (!subscription) {
+
+            // Check for cancelled subscription
+            const cancelledSubscription = await Subscription.findOne({
+                userId: businessId,
+                status: 'canceled',
+                cancelAtPeriodEnd: true
+            });
+
+            if (!subscription && !cancelledSubscription) {
                 return send400(res, {
                     status: false,
                     message: "Business does not have a valid subscription",
                     data: null,
                 });
             }
+
+            // If subscription is cancelled but still in grace period
+            if (cancelledSubscription && cancelledSubscription.currentPeriodEnd > new Date()) {
+                return send200(res, {
+                    status: true,
+                    message: "Business details fetched successfully",
+                    data: {
+                        name: existingBusiness.name,
+                        website_url: existingBusiness.website_url,
+                        logo: existingBusiness.logo,
+                        themeColor: existingBusiness.themeColor,
+                        subscriptionStatus: 'cancelled',
+                        subscriptionEndDate: cancelledSubscription.currentPeriodEnd,
+                    },
+                });
+            }
+
+            // Active subscription
             send200(res, {
                 status: true,
                 message: "Business details fetched successfully",
@@ -89,6 +115,7 @@ export const getChatBotDetail = async (req, res) => {
                     website_url: existingBusiness.website_url,
                     logo: existingBusiness.logo,
                     themeColor: existingBusiness.themeColor,
+                    subscriptionStatus: 'active'
                 },
             });
         }

@@ -144,26 +144,81 @@ const adminSignup = [
     jwtAuthGuard,
     async (req, res) => {
       try {
-        const filter = { /* your filter object */ };
-        const sort = { [req.query.sort]: Number(req.query.sort_order) }; // sort order
-        const limit = req.query.limit; // number of records to return
-        const offset = req.query.skip; // starting index of records to return
-        const select = ['name', 'email', 'contact_name', '_id', 'logo', "website_url", "instagram_url", "themeColor", "keywords", "isEmailVerified"]; // fields to include in the response
+        // Build filter object
+        const filter = {
+          isDeleted: { $ne: true } // Exclude deleted businesses
+        };
 
-        let businessList = await retrieveAllBusiness(filter, sort, limit, offset, select);
+        // Add search filter if search parameter exists
+        if (req.query.search) {
+          filter.$or = [
+            { name: { $regex: req.query.search, $options: 'i' } },
+            { email: { $regex: req.query.search, $options: 'i' } },
+            { contact_name: { $regex: req.query.search, $options: 'i' } }
+          ];
+        }
+
+        // Build sort object
+        const sort = {};
+        if (req.query.sort && req.query.sort_order) {
+          sort[req.query.sort] = Number(req.query.sort_order);
+        } else {
+          sort.createdAt = -1; // Default sort by creation date
+        }
+
+        // Parse pagination parameters
+        const limit = parseInt(req.query.limit) || 10;
+        const offset = parseInt(req.query.skip) || 0;
+
+        // Fields to select
+        const select = [
+          'name',
+          'email',
+          'contact_name',
+          '_id',
+          'logo',
+          'website_url',
+          'instagram_url',
+          'themeColor',
+          'keywords',
+          'isEmailVerified',
+          'createdAt',
+          'status'
+        ];
+
+        console.log('Fetching business list with params:', {
+          filter,
+          sort,
+          limit,
+          offset,
+          select
+        });
+
+        const businessList = await retrieveAllBusiness(filter, sort, limit, offset, select);
+        
+        if (!businessList) {
+          return send400(res, {
+            status: false,
+            message: "Failed to fetch business list",
+            data: null
+          });
+        }
+
         send200(res, {
           status: true,
           message: "Business List",
-          data: businessList,
+          data: businessList
         });
       } catch (err) {
+        console.error('Error in getBusinessList:', err);
         send401(res, {
           status: false,
-          message: err.message,
-          data: null,
+          message: err.message || "Failed to fetch business list",
+          data: null
         });
       }
-    }],
+    }
+  ],
   getBusinessDetail = [
     jwtAuthGuard,
     async (req, res) => {

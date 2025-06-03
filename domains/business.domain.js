@@ -1,5 +1,4 @@
 import responseHelper from "../helpers/response.helper.js";
-import ConstHelper from "../helpers/message.helper.js";
 import __dirname from "../configurations/dir.config.js";
 import validator from "../configurations/validation.config.js";
 import signupValidator from "../validators/signup.validator.js";
@@ -9,7 +8,6 @@ import bcrypt from "bcrypt";
 import moment from "moment-timezone";
 import awsEmailExternal from "../externals/send.email.external.js";
 import forgotPasswordValidator from "../validators/forgot.password.validator.js";
-import resetPasswordValidator from "../validators/reset.password.validator.js";
 import businessService from "../services/business.service.js";
 import jwtMiddleware from "../middlewares/jwt.middleware.js";
 import upload from "../middlewares/upload.middleware.js";
@@ -19,6 +17,7 @@ import config from "../configurations/app.config.js";
 import businessModel from "../models/business.model.js";
 import adminService from "../services/admin.service.js";
 import { getActiveSubscriptionDetails } from "../services/subscription.service.js";
+import Subscription from "../models/subscription.model.js";
 
 const { send200, send401, send400 } = responseHelper,
     { createBusiness, updateBusiness, retriveBusiness } = businessService,
@@ -190,6 +189,11 @@ const businessSignup = [
                                 data: null,
                             });
                         else {
+                            // check if this business have valid subscription
+                            const subscription = await Subscription.findOne({
+                                userId: existingBusiness._id,
+                                currentPeriodEnd: { $gt: new Date() }
+                            });
                             let update_Business = await updateBusiness(
                                 {
                                     _id: existingBusiness._id,
@@ -209,7 +213,10 @@ const businessSignup = [
                             send200(res, {
                                 status: true,
                                 message: "Business Login Successfully",
-                                data: update_Business,
+                                data: {
+                                    ...update_Business._doc,
+                                    subscription
+                                },
                             });
                         }
                     }

@@ -2,6 +2,7 @@ import { Router } from "express";
 import { getChatBotDetail, handleChatbotFlow } from "../domains/openai.domain.js";
 import businessModel from "../models/business.model.js";
 import { OpenAI } from "openai";
+import Subscription from "../models/subscription.model.js";
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 const openaiRouter = Router();
 
@@ -21,6 +22,30 @@ openaiRouter.post('/start-chat', async (req, res) => {
         data: {
           isSetupIncomplete: true,
           contactInfo: business?.email || "support@wellnexai.com"
+        }
+      });
+    }
+
+    // Check subscription status
+    const subscription = await Subscription.findOne({
+      userId: businessId,
+      status: { $in: ['active', 'trialing'] },
+      currentPeriodEnd: { $gt: new Date() }
+    });
+
+    const cancelledSubscription = await Subscription.findOne({
+      userId: businessId,
+      status: 'canceled',
+      cancelAtPeriodEnd: true,
+      currentPeriodEnd: { $gt: new Date() }
+    });
+
+    if (!subscription && !cancelledSubscription) {
+      return res.status(200).json({
+        status: false,
+        message: "Your subscription has expired. Please renew your subscription to continue using the chatbot.",
+        data: {
+          subscriptionExpired: true,
         }
       });
     }

@@ -101,12 +101,42 @@ const { Schema } = mongoose,
                 type: mongoose.Schema.Types.ObjectId,
                 ref: 'currency',
             },
+            isDeleted: {
+                type: Boolean,
+                default: false
+            },
+            deletedAt: {
+                type: Date,
+                default: null
+            },
+            deletedBy: {
+                type: Schema.Types.ObjectId,
+                ref: 'admin',
+                default: null
+            },
+            deletionReason: {
+                type: String,
+                default: null
+            }
         },
         {
             versionKey: false,
             timestamps: true,
         }
     );
+
+// Add middleware to exclude deleted businesses from queries
+businessSchema.pre('find', function() {
+    this.where({ isDeleted: false });
+});
+
+businessSchema.pre('findOne', function() {
+    this.where({ isDeleted: false });
+});
+
+businessSchema.pre('findById', function() {
+    this.where({ isDeleted: false });
+});
 
 businessSchema.plugin(mongoosePaginate);
 

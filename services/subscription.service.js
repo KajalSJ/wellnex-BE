@@ -6,6 +6,8 @@ import businessService from './business.service.js';
 import currencyModel from '../models/currency.model.js';
 import path from 'path';
 import __dirname from "../configurations/dir.config.js";
+import responseHelper from '../helpers/response.helper.js';
+const { send400, } = responseHelper;
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 const { sendingMail } = awsEmailExternal,
@@ -50,8 +52,8 @@ export const createSubscription = async (userId, paymentMethodId, priceId) => {
             throw new Error('Business not found');
         }
         const subscriptionActive = await Subscription.findOne({
-            businessId: userId,
-            status: 'active',
+            userId: userId,
+            status: { $in: ['active', 'trialing'] },
             currentPeriodEnd: { $gt: new Date() }
         });
         if (subscriptionActive) {
@@ -544,7 +546,7 @@ export const getActiveSubscription = async (userId) => {
     try {
         const subscription = await Subscription.findOne({
             userId,
-            status: 'active',
+            status: { $in: ['active', 'trialing', 'canceled'] },
             currentPeriodEnd: { $gt: new Date() }
         });
         let existingBusiness = await retriveBusiness({
@@ -685,7 +687,7 @@ export const renewSubscriptionAfterSpecialOffer = async (userId, paymentMethodId
         const specialOfferSubscription = await Subscription.findOne({
             userId,
             isSpecialOffer: true,
-            status: 'active',
+            status: { $in: ['active', 'trialing'] },
             currentPeriodEnd: { $gt: new Date() }
         });
 
