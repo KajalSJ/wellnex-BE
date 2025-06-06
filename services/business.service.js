@@ -3,6 +3,9 @@ import businessModel from "../models/business.model.js";
 import Subscription from "../models/subscription.model.js";
 import createAuditLog from "../helpers/audit.log.helper.js";
 import mongoose from "mongoose";
+import config from "../configurations/app.config.js";
+import Stripe from "stripe";
+const stripe = Stripe(config.STRIPE_KEY);
 
 const {
   createOne,
@@ -37,12 +40,8 @@ const createBusiness = async (data) => {
         throw new Error("Invalid business ID format");
       }
 
-      console.log("Attempting to delete business with ID:", businessId);
-
       // 2. Check if business exists
       const businessExists = await retrieveOne(businessModel, { _id: businessId });
-      console.log("Business found:", businessExists ? "Yes" : "No");
-
       if (!businessExists) {
         throw new Error("Business not found");
       }
@@ -70,6 +69,20 @@ const createBusiness = async (data) => {
       }
 
       // 4. Cancel all active subscriptions
+      const activeSubscriptions = await Subscription.find({
+        userId: businessId,
+        status: { $in: ['active', 'trialing'] }
+      });
+
+      for (const subscription of activeSubscriptions) {
+        if (!subscription.stripeSubscriptionId.includes('special_'))
+          // Cancel in Stripe
+          await stripe.subscriptions.update(
+            subscription.stripeSubscriptionId,
+            { cancel_at_period_end: true }
+          );
+      }
+
       const subscriptionResult = await Subscription.updateMany(
         {
           userId: businessId,
@@ -95,10 +108,10 @@ const createBusiness = async (data) => {
       });
 
       // 6. Send notifications with complete business data
-      const businessData = {
-        ...businessExists.toObject(),
-        ...deletedBusiness
-      };
+      // const businessData = {
+      //   ...businessExists.toObject(),
+      //   ...deletedBusiness
+      // };
 
       return {
         status: true,

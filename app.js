@@ -16,6 +16,7 @@ import openaiRouter from "./routes/openai.route.js";
 import subscriptionRouter from "./routes/subscription.routes.js";
 import webhookRouter from "./routes/webhook.routes.js";
 import contactUsRouter from "./routes/contactUs.js";
+import careerRouter from "./routes/career.routes.js";
 import path from "path";
 import currencyRouter from "./routes/currency.route.js";
 const app = express(),
@@ -63,6 +64,7 @@ const app = express(),
     app.use('/webhook', webhookRouter);
     app.use('/currency', currencyRouter);
     app.use('/contact', contactUsRouter);
+    app.use('/careers', careerRouter);
   },
   connectToDatabase = async () => {
     connection.on(

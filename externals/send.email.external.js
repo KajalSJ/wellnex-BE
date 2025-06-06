@@ -22,11 +22,11 @@ const sendingMail = ({ sub, text, html, email, attachments }) => {
     subject: sub,
     text: text,
     html: html,
-    // attachments: attachments,
+    attachments: attachments,
   };
   return new Promise((resolve, reject) => {
     transporter.sendMail(msg, (err, data) => {
-      console.log("Mail sent successfully.", data, err);
+      console.log("Mail sent successfully.");
       if (err) {
         console.error("Error sending email:", err.message);
         return reject(err.message);

@@ -44,6 +44,16 @@ const businessSignup = [
                 body: { email, password, name, contact_name, website_url, instagram_url },
             } = req;
             try {
+                let existingAdmin = await retriveAdmin({
+                    email: email.toLowerCase(),
+                });
+                if (existingAdmin) {
+                    return send400(res, {
+                        status: false,
+                        message: "Email already exist",
+                        data: null,
+                    });
+                }
                 let existingBusiness = await retriveBusiness({
                     email: email.toLowerCase(),
                 });
@@ -553,12 +563,24 @@ const businessSignup = [
                             data: null,
                         });
                     } else {
+                        // Filter out keywords that already exist
+                        const existingKeywordNames = existingBusiness.keywords.map(k => k.name.toLowerCase());
+                        const newKeywords = keywords.filter(keyword =>
+                            !existingKeywordNames.includes(keyword.name.toLowerCase())
+                        );
+                        if (newKeywords.length === 0) {
+                            return send400(res, {
+                                status: false,
+                                message: "All keywords already exist",
+                                data: existingBusiness.keywords,
+                            });
+                        }
                         const update_Business = await updateBusiness(
                             {
                                 _id: existingBusiness._id,
                             },
                             {
-                                $addToSet: { keywords: { $each: keywords } }
+                                $addToSet: { keywords: { $each: newKeywords } }
                             }
                         )
                         send200(res, {
@@ -607,7 +629,6 @@ const businessSignup = [
                             email: existingBusiness.email,
                         });
                         let verifyLink = `${config.APP_URL}/verifyEmail/${existingBusiness._id}?token=${verificationToken}`;
-                        console.log(verifyLink, "verifyLink");
                         await sendingMail({
                             email: existingBusiness.email,
                             sub: "Verify your email to access WellnexAI!",
@@ -926,53 +947,92 @@ const businessSignup = [
             }
         }
     ],
-    updateOneService = [
+
+    addBusinessServices = [
         jwtAuthGuard,
         async (req, res) => {
-            const {
-                body: { serviceId, businessId },
-            } = req;
-            try {
-                let existingBusiness = await retriveBusiness({
-                    _id: businessId,
+            const errors = validationThrowsError(req);
+            if (errors.length)
+                return send400(res, {
+                    status: false,
+                    message: errors[0]?.msg,
+                    data: null,
                 });
-                if (!existingBusiness) {
+            else {
+                const {
+                    body: { services, businessId },
+                } = req;
+
+                // Validate services array
+                if (!services || !Array.isArray(services)) {
                     return send400(res, {
                         status: false,
-                        message: "Business not found",
+                        message: "Services must be an array",
                         data: null,
                     });
-                } else {
-                    const serviceIndex = existingBusiness.services.findIndex(
-                        (service) => service._id.toString() === serviceId
-                    );
-                    if (serviceIndex === -1) {
+                }
+
+                // Validate each service has a name
+                for (const service of services) {
+                    if (!service.name || typeof service.name !== 'string') {
                         return send400(res, {
                             status: false,
-                            message: "Service not found",
+                            message: "Each service must have a name property",
                             data: null,
                         });
                     }
-                    existingBusiness.services[serviceIndex] = {
-                        ...existingBusiness.services[serviceIndex],
-                        ...req.body,
-                    };
-                    await existingBusiness.save();
-                    send200(res, {
-                        status: true,
-                        message: "Service updated successfully",
-                        data: existingBusiness.services[serviceIndex],
+                }
+
+                try {
+                    let existingBusiness = await retriveBusiness({
+                        _id: businessId,
+                    });
+                    if (!existingBusiness) {
+                        return send400(res, {
+                            status: false,
+                            message: "Business not found",
+                            data: null,
+                        });
+                    } else {
+                        // Filter out services that already exist
+                        const existingServiceNames = existingBusiness.services.map(s => s.name.toLowerCase());
+                        const newServices = services.filter(service =>
+                            !existingServiceNames.includes(service.name.toLowerCase())
+                        );
+
+                        if (newServices.length === 0) {
+                            return send400(res, {
+                                status: false,
+                                message: "All services already exist",
+                                data: existingBusiness.services,
+                            });
+                        }
+
+                        const update_Business = await updateBusiness(
+                            {
+                                _id: existingBusiness._id,
+                            },
+                            {
+                                $addToSet: { services: { $each: newServices } }
+                            }
+                        )
+                        send200(res, {
+                            status: true,
+                            message: "Business services updated successfully",
+                            data: { services: update_Business.services },
+                        });
+                    }
+                } catch (err) {
+                    send401(res, {
+                        status: false,
+                        message: err.message,
+                        data: null,
                     });
                 }
-            } catch (err) {
-                send401(res, {
-                    status: false,
-                    message: err.message,
-                    data: null,
-                });
             }
         }
     ],
+
     getServicesList = [
         jwtAuthGuard,
         async (req, res) => {
@@ -992,7 +1052,7 @@ const businessSignup = [
                 } else {
                     send200(res, {
                         status: true,
-                        message: "Services fetched successfully",
+                        message: "Business services fetched successfully",
                         data: existingBusiness.services,
                     });
                 }
@@ -1005,6 +1065,114 @@ const businessSignup = [
             }
         }
     ],
+
+    updateOneService = [
+        jwtAuthGuard,
+        async (req, res) => {
+            const errors = validationThrowsError(req);
+            if (errors.length)
+                return send400(res, {
+                    status: false,
+                    message: errors[0]?.msg,
+                    data: null,
+                });
+            else {
+                const {
+                    body: { service, businessId },
+                } = req;
+
+                try {
+                    let existingBusiness = await retriveBusiness({
+                        _id: businessId,
+                    });
+                    if (!existingBusiness) {
+                        return send400(res, {
+                            status: false,
+                            message: "Business not found",
+                            data: null,
+                        });
+                    } else {
+                        const serviceIndex = existingBusiness.services.findIndex(
+                            (ser) => ser._id.toString() === service._id
+                        );
+
+                        if (serviceIndex === -1) {
+                            return send400(res, {
+                                status: false,
+                                message: "Service not found",
+                                data: null,
+                            });
+                        } else {
+                            existingBusiness.services[serviceIndex] = {
+                                ...existingBusiness.services[serviceIndex],
+                                ...service
+                            };
+                            await existingBusiness.save();
+                            send200(res, {
+                                status: true,
+                                message: "Service updated successfully",
+                                data: existingBusiness.services[serviceIndex],
+                            });
+                        }
+                    }
+                } catch (err) {
+                    send401(res, {
+                        status: false,
+                        message: err.message,
+                        data: null,
+                    });
+                }
+            }
+        }
+    ],
+
+    deleteService = [
+        jwtAuthGuard,
+        async (req, res) => {
+            const {
+                body: { serviceId, businessId },
+            } = req;
+
+            try {
+                let existingBusiness = await retriveBusiness({
+                    _id: businessId,
+                });
+                if (!existingBusiness) {
+                    return send400(res, {
+                        status: false,
+                        message: "Business not found",
+                        data: null,
+                    });
+                } else {
+                    const serviceIndex = existingBusiness.services.findIndex(
+                        (ser) => ser._id.toString() === serviceId
+                    );
+                    if (serviceIndex === -1) {
+                        return send400(res, {
+                            status: false,
+                            message: "Service not found",
+                            data: null,
+                        });
+                    } else {
+                        existingBusiness.services.splice(serviceIndex, 1);
+                        await existingBusiness.save();
+                        send200(res, {
+                            status: true,
+                            message: "Service deleted successfully",
+                            data: existingBusiness.services,
+                        });
+                    }
+                }
+            } catch (err) {
+                send401(res, {
+                    status: false,
+                    message: err.message,
+                    data: null,
+                });
+            }
+        }
+    ],
+
     deleteKeyword = [
         jwtAuthGuard,
         async (req, res) => {
@@ -1109,6 +1277,17 @@ const businessSignup = [
                     });
                 }
 
+                // Validate each question has required properties
+                for (const question of questions) {
+                    if (!question.name || typeof question.name !== 'string') {
+                        return send400(res, {
+                            status: false,
+                            message: "Each question must have a name property",
+                            data: null,
+                        });
+                    }
+                }
+
                 try {
                     let existingBusiness = await retriveBusiness({
                         _id: businessId,
@@ -1120,12 +1299,26 @@ const businessSignup = [
                             data: null,
                         });
                     } else {
+                        // Filter out questions that already exist
+                        const existingQuestionTexts = existingBusiness.questions.map(q => q.name.toLowerCase());
+                        const newQuestions = questions.filter(question =>
+                            !existingQuestionTexts.includes(question.name.toLowerCase())
+                        );
+
+                        if (newQuestions.length === 0) {
+                            return send400(res, {
+                                status: false,
+                                message: "All questions already exist",
+                                data: existingBusiness.questions,
+                            });
+                        }
+
                         const update_Business = await updateBusiness(
                             {
                                 _id: existingBusiness._id,
                             },
                             {
-                                $addToSet: { questions: { $each: questions } }
+                                $addToSet: { questions: { $each: newQuestions } }
                             }
                         )
                         send200(res, {
@@ -1345,7 +1538,6 @@ const businessSignup = [
 
                 // Send embed code email
                 const embedCode = `&lt;script src="https://embed.wellnexai.com/chatbot.js" data-business-id="${existingBusiness._id}"&gt;&lt;/script&gt;`;
-                console.log('Sending embed code email with code:', embedCode); // Debug log
 
                 await sendingMail({
                     email: existingBusiness.email,
@@ -1428,8 +1620,10 @@ const businessSignup = [
         getBusinessDetail,
         addBusinessKeywords,
         updateOneKeyWord,
+        addBusinessServices,
         updateOneService,
         getServicesList,
+        deleteService,
         getKeywords,
         deleteKeyword,
         deleteAllKeywords,

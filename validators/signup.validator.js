@@ -35,9 +35,7 @@ const firstName = check("firstName")
   name = check("name")
     .not()
     .isEmpty()
-    .withMessage("name is required field")
-    .custom((value) => /^[a-zA-Z ]*$/.test(value))
-    .withMessage("name must be in alphabets only"),
+    .withMessage("name is required field"),
   email = check("email")
     .not()
     .isEmpty()

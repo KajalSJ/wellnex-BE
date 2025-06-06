@@ -19,8 +19,10 @@ const businessRouter = Router(),
     getBusinessDetail,
     updateOneKeyWord,
     updateOneService,
-    getKeywords,
+    addBusinessServices,
     getServicesList,
+    deleteService,
+    getKeywords,
     deleteKeyword,
     deleteAllKeywords,
     addBusinessQuestions,
@@ -49,6 +51,8 @@ const businessRouter = Router(),
         GET_BUSINESS_DETAIL,
         UPDATE_ONE_KEYWORD,
         UPDATE_ONE_SERVICE,
+        ADD_BUSINESS_SERVICES,
+        DELETE_SERVICE,
         GET_SERVICES_LIST,
         GET_KEYWORDS,
         DELETE_KEYWORD,
@@ -78,8 +82,10 @@ businessRouter.put(UPDATE_BUSINESS_DETAIL, updateBusinessDetail);
 businessRouter.post(GET_BUSINESS_DETAIL, getBusinessDetail);
 businessRouter.put(UPDATE_ONE_KEYWORD, updateOneKeyWord);
 businessRouter.put(UPDATE_ONE_SERVICE, updateOneService);
-businessRouter.post(GET_KEYWORDS, getKeywords);
+businessRouter.post(ADD_BUSINESS_SERVICES, addBusinessServices);
 businessRouter.post(GET_SERVICES_LIST, getServicesList);
+businessRouter.delete(DELETE_SERVICE, deleteService);
+businessRouter.post(GET_KEYWORDS, getKeywords);
 businessRouter.delete(DELETE_KEYWORD, deleteKeyword);
 businessRouter.delete(DELETE_ALL_KEYWORDS, deleteAllKeywords);
 businessRouter.post(ADD_BUSINESS_QUESTIONS, addBusinessQuestions);

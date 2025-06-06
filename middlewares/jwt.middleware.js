@@ -13,7 +13,6 @@ const { send401, send400 } = responseHelper,
   } = SleepDiary;
 const verifyToken = async (req, res, next) => {
   try {
-    console.log(req.header, "header");
 
     if (!req.header("authorization")) {
       send401(res, {
@@ -23,13 +22,9 @@ const verifyToken = async (req, res, next) => {
       });
     } else {
       const token = req.header("authorization").split("Bearer ");
-      console.log(token, "token");
-      console.log(token[1], "token[1]");
       req.user = jwtVerify(token[1]).sub;
-      console.log(req.user);
       let checkBusiness = await retriveBusiness({ _id: req.user._id });
       let checkAdmin = await retriveAdmin({ _id: req.user._id });
-      console.log(checkBusiness, checkAdmin, "checkAdmin");
       if (checkAdmin) {
         if (checkAdmin.loginToken == null) {
           send401(res, {
@@ -61,8 +56,6 @@ const verifyToken = async (req, res, next) => {
       }
     }
   } catch (error) {
-    console.log(error);
-
     send401(res, {
       status: false,
       message: PASS_TOKEN_INVD_ERR,
@@ -73,8 +66,6 @@ const verifyToken = async (req, res, next) => {
 },
   verifyAdminToken = async (req, res, next) => {
     try {
-      console.log(req.header, "header");
-
       if (!req.header("authorization")) {
         send401(res, {
           status: false,
@@ -82,13 +73,9 @@ const verifyToken = async (req, res, next) => {
           data: null,
         });
       } else {
-        const token = req.header("authorization").split("Bearer ");
-        console.log(token, "token");
-        console.log(token[1], "token[1]");
+        const token = req.header("authorization").split("Bearer "); 
         req.user = jwtVerify(token[1]).sub;
-        console.log(req.user);
         let checkAdmin = await retriveAdmin({ _id: req.user._id });
-        console.log(checkAdmin, "checkAdmin");
         if (checkAdmin) {
           if (checkAdmin.loginToken == null) {
             send401(res, {
@@ -110,8 +97,6 @@ const verifyToken = async (req, res, next) => {
         }
       }
     } catch (error) {
-      console.log(error);
-
       send401(res, {
         status: false,
         message: PASS_TOKEN_INVD_ERR,

@@ -1,5 +1,5 @@
 import express from 'express';
-import { createSubscription, cancelSubscription, getActiveSubscription, getSavedCards, getSubscriptionPlans, removeSavedCard, applySpecialOffer, getProductPrices, renewSubscriptionAfterSpecialOffer, setDefaultCard, updateCardDetails, updatePreferredCurrency } from '../services/subscription.service.js';
+import { createSubscription, cancelSubscription, getActiveSubscription, getSavedCards, getSubscriptionPlans, removeSavedCard, applySpecialOffer, checkSpecialOfferPrice, getProductPrices, renewSubscriptionAfterSpecialOffer, setDefaultCard, updateCardDetails, updatePreferredCurrency } from '../services/subscription.service.js';
 import jwtMiddleware from '../middlewares/jwt.middleware.js';
 
 const router = express.Router();
@@ -112,7 +112,15 @@ router.get('/plans', jwtAuthGuard, async (req, res) => {
         res.status(500).json({ message: 'Error fetching subscription plans' });
     }
 });
-
+// check-special-offer before cancel subscription
+router.get('/check-special-offer', jwtAuthGuard, async (req, res) => {
+    try {
+        const result = await checkSpecialOfferPrice(req.user._id);
+        res.json(result);
+    } catch (error) {
+        res.status(400).json({ error: error.message });
+    }
+});
 // Apply special offer
 router.post('/apply-special-offer', jwtAuthGuard, async (req, res) => {
     try {

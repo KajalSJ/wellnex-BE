@@ -11,15 +11,15 @@ import moment from "moment-timezone";
 import awsEmailExternal from "../externals/send.email.external.js";
 import jwtMiddleware from "../middlewares/jwt.middleware.js";
 import businessService from "../services/business.service.js";
-import upload from "../middlewares/upload.middleware.js";
 import { getAllActiveSubscriptions, getSubscriptionCountsHandler, getPaymentListHandler, updateSubscriptionStatusHandler, getActiveSubscriptionDetails } from "../services/subscription.service.js";
+import Subscription from "../models/subscription.model.js";
 
 const { send200, send401, send400 } = responseHelper,
   { createAdmin, updateAdmin, retriveAdmin } = adminService,
   { validationThrowsError } = validator,
   { sendingMail } = awsEmailExternal,
   { verifyAdminToken: jwtAuthGuard } = jwtMiddleware,
-  { generateToken, daysBetweenTwoDates } = helpers,
+  { generateToken, } = helpers,
   { retrieveAllBusiness, retriveBusiness } = businessService,
   {
     MESSAGES: { JWT_EXPIRED_ERR },
@@ -181,18 +181,12 @@ const adminSignup = [
           'instagram_url',
           'themeColor',
           'keywords',
+          'services',
+          'questions',
           'isEmailVerified',
           'createdAt',
           'status'
         ];
-
-        console.log('Fetching business list with params:', {
-          filter,
-          sort,
-          limit,
-          offset,
-          select
-        });
 
         const businessList = await retrieveAllBusiness(filter, sort, limit, offset, select);
         
@@ -204,10 +198,40 @@ const adminSignup = [
           });
         }
 
+        // Get subscription details for each business
+        const businessesWithSubscriptions = await Promise.all(
+          businessList.docs.map(async (business) => {
+            const subscriptionDetail = await Subscription.findOne({
+              userId: business._id,
+              status: { $in: ['active', 'trialing'] },
+              $or: [
+                { specialOfferExpiry: { $gt: new Date() } },
+                { currentPeriodEnd: { $gt: new Date() } }
+              ]
+            });
+            return {
+              ...business._doc,
+              subscriptionDetail
+            };
+          })
+        );
+ 
         send200(res, {
           status: true,
           message: "Business List",
-          data: businessList
+          data: {
+            businesses: businessesWithSubscriptions,
+            totalDocs: businessList.totalDocs,
+            offset: businessList.offset,
+            limit: businessList.limit,
+            totalPages: businessList.totalPages,
+            page: businessList.page,
+            pagingCounter: businessList.pagingCounter,
+            hasPrevPage: businessList.hasPrevPage,
+            hasNextPage: businessList.hasNextPage,
+            prevPage: businessList.prevPage,
+            nextPage: businessList.nextPage
+          }
         });
       } catch (err) {
         console.error('Error in getBusinessList:', err);

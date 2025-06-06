@@ -19,7 +19,7 @@ const config = {
   JWT_EXPIRY: process.env.JWT_EXPIRY,
 
 
-  STRIPE_KEY: process.env.STRIPE_KEY,
+  STRIPE_KEY: process.env.STRIPE_SECRET_KEY,
   USER_PRODUCT_STRIPE_KEY: process.env.USER_PRODUCT_STRIPE_KEY,
 
   // PROTON_PASSWORD: process.env.PROTON_PASSWORD,

@@ -4,6 +4,8 @@ import ConstHelper from "../helpers/message.helper.js";
 import { deleteBusiness, restoreBusiness } from "../services/business.service.js";
 import responseHelper from "../helpers/response.helper.js";
 import { isAdmin } from "../middlewares/auth.middleware.js";
+import Lead from "../models/lead.model.js";
+import adminService from "../services/admin.service.js";
 
 const adminRouter = Router(),
     {
@@ -44,7 +46,7 @@ adminRouter.put(UPDATE_SUBSCRIPTION_STATUS, updateSubscriptionStatus);
 
 // Delete business by admin
 adminRouter.delete('/business/:businessId',
-     isAdmin,
+    isAdmin,
     async (req, res) => {
         try {
             const { businessId } = req.params;
@@ -57,9 +59,8 @@ adminRouter.delete('/business/:businessId',
                     data: null
                 });
             }
-            console.log(req.user, "req.user._id");
-
             const result = await deleteBusiness(businessId, req.user._id, reason);
+
             return send200(res, result);
         } catch (error) {
             return send401(res, {
@@ -72,7 +73,7 @@ adminRouter.delete('/business/:businessId',
 
 // Restore deleted business
 adminRouter.post('/business/:businessId/restore',
-     isAdmin, 
+    isAdmin,
     async (req, res) => {
         try {
             const { businessId } = req.params;
@@ -95,5 +96,49 @@ adminRouter.post('/business/:businessId/restore',
             });
         }
     });
+// Get lead counts
+adminRouter.get('/lead-counts', isAdmin, async (req, res) => {
+    try {
+
+        // Get total leads count
+        const totalLeads = await Lead.countDocuments({});
+        res.json({
+            status: true,
+            data: {
+                totalLeads,
+            }
+        });
+    } catch (err) {
+        console.error("Get Lead Counts Error:", err);
+        res.status(500).json({
+            status: false,
+            message: "Internal server error"
+        });
+    }
+});
+
+// Get admin list
+adminRouter.get('/list', isAdmin, async (req, res) => {
+    try {
+        const filter = {};
+        const sort = { createdAt: -1 };
+        const select = ['name', 'email', 'roles', 'active', 'inactive', 'loginTime', 'createdAt'];
+
+        const admins = await adminService.retrieveAdmins(filter, sort);
+
+        send200(res, {
+            status: true,
+            message: "Admin list fetched successfully",
+            data: admins
+        });
+    } catch (err) {
+        console.error("Get Admin List Error:", err);
+        send401(res, {
+            status: false,
+            message: err.message || "Failed to fetch admin list",
+            data: null
+        });
+    }
+});
 
 export default adminRouter;

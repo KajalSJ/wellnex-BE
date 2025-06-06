@@ -8,11 +8,13 @@ import path from 'path';
 import __dirname from "../configurations/dir.config.js";
 import responseHelper from '../helpers/response.helper.js';
 const { send400, } = responseHelper;
+import config from "../configurations/app.config.js";
+import adminService from './admin.service.js';
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 const { sendingMail } = awsEmailExternal,
     { retriveBusiness } = businessService;
-
+const specialOfferPriceValue = 100;
 export const createStripeCustomer = async (userId) => {
     try {
         const user = await Business.findById({ _id: userId });
@@ -174,6 +176,7 @@ export const createSubscription = async (userId, paymentMethodId, priceId) => {
         } else {
             customer = await stripe.customers.create({
                 email: business.email,
+                name: business.name,
                 payment_method: paymentMethodId,
                 invoice_settings: {
                     default_payment_method: paymentMethodId,
@@ -242,7 +245,6 @@ export const createSubscription = async (userId, paymentMethodId, priceId) => {
         // Send embed code email
         const embedCode = `&lt;script src="https://wellnexai.com/chatbot.js" data-business-id="${business._id}"&gt;&lt;/script&gt;
         &lt;link rel="stylesheet" href="https://wellnexai.com/chatbot.css"/&gt;`;
-        console.log('Sending embed code email with code:', embedCode); // Debug log
 
         await sendingMail({
             email: business.email,
@@ -269,7 +271,6 @@ export const createSubscription = async (userId, paymentMethodId, priceId) => {
             }]
         });
 
-        console.log("Mail sent successfully in after subscription.");
         return {
             subscriptionId: subscription.id,
             clientSecret: subscription.latest_invoice.payment_intent.client_secret,
@@ -318,6 +319,40 @@ export const setDefaultCard = async (userId, paymentMethodId) => {
     }
 };
 
+export const checkSpecialOfferPrice = async (userId) => {
+    // Find the active subscription
+    const subscription = await Subscription.findOne({
+        userId,
+        status: { $in: ['active', 'trialing'] },
+        isSpecialOffer: false,
+    });
+
+    if (!subscription) {
+        throw new Error('No active subscription found');
+    }
+    if (subscription.hasReceivedSpecialOffer && subscription.specialOfferApplied) {
+        return {
+            success: true,
+            message: 'Special offer already applied. We are proceeding to cancel the subscription.',
+            hasSpecialOffer: false,
+            specialOfferPrice: null,
+            currentPeriodEnd: subscription.currentPeriodEnd
+        };
+    }
+    // Update subscription to mark that offer has been presented
+    subscription.hasReceivedSpecialOffer = true;
+    await subscription.save();
+
+    // Return special offer instead of canceling
+    return {
+        success: true,
+        message: `We understand that businesses have ups and downs. We\'d like to offer you a special rate of $${specialOfferPriceValue} for the next month to help you through this period. Press the button below to apply the offer.`,
+        hasSpecialOffer: true,
+        specialOfferPrice: specialOfferPriceValue,
+        currentPeriodEnd: subscription.currentPeriodEnd
+    };
+
+};
 
 export const cancelSubscription = async (userId) => {
     try {
@@ -330,22 +365,6 @@ export const cancelSubscription = async (userId) => {
 
         if (!subscription) {
             throw new Error('No active subscription found');
-        }
-
-        // Check if user has already received the special offer
-        if (!subscription.hasReceivedSpecialOffer) {
-            // Update subscription to mark that offer has been presented
-            subscription.hasReceivedSpecialOffer = true;
-            await subscription.save();
-
-            // Return special offer instead of canceling
-            return {
-                success: true,
-                message: 'We understand that businesses have ups and downs. We\'d like to offer you a special rate of $50 for the next month to help you through this period. Press the button below to apply the offer.',
-                hasSpecialOffer: true,
-                specialOfferPrice: 50,
-                currentPeriodEnd: subscription.currentPeriodEnd
-            };
         }
 
         // If user has already received the offer or declined it, proceed with cancellation
@@ -390,6 +409,30 @@ export const cancelSubscription = async (userId) => {
             `
         });
 
+        const filter = {};
+        const sort = { createdAt: -1 };
+        const select = ['email'];
+        const admins = await adminService.retrieveAdmins(filter, sort, select);
+        admins.forEach(async (admin) => {
+            // Send email to admin
+            await sendingMail({
+                email: admin.email,
+                sub: `Subscription Cancellation Alert - ${user.name}`,
+                text: `A user has cancelled their subscription:\n\nUser Details:\nName: ${user.name}\nEmail: ${user.email}\nSubscription End Date: ${endDate}\n\nThis is an automated notification.`,
+                html: `
+                <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+                    <h2 style="color: #333;">Subscription Cancellation Alert</h2>
+                    <p>A user has cancelled their subscription:</p>
+                    <div style="background-color: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0;">
+                        <p style="margin: 5px 0;"><strong>User Name:</strong> ${user.name}</p>
+                        <p style="margin: 5px 0;"><strong>User Email:</strong> ${user.email}</p>
+                        <p style="margin: 5px 0;"><strong>Subscription End Date:</strong> ${endDate}</p>
+                    </div>
+                    <p>This is an automated notification.</p>
+                </div>
+            `
+            });
+        });
         return {
             success: true,
             message: 'Subscription will be canceled at the end of the billing period',
@@ -423,7 +466,7 @@ export const applySpecialOffer = async (userId) => {
 
         // Calculate the next month's date
         const nextMonth = new Date();
-        nextMonth.setMonth(nextMonth.getDate() + 1);
+        nextMonth.setMonth(nextMonth.getMonth() + 1);
 
         // First, cancel the current subscription
         await stripe.subscriptions.update(
@@ -433,109 +476,143 @@ export const applySpecialOffer = async (userId) => {
 
         // Create a new product for the special offer
         const newProduct = await stripe.products.create({
-            name: 'Special Offer - $50 Monthly',
-            description: 'Special one-month offer at $50',
+            name: `Special Offer - $${specialOfferPriceValue} Monthly`,
+            description: `Special one-month offer at $${specialOfferPriceValue}`,
             active: true
         });
 
         // Create a new price for the special offer
         const newPrice = await stripe.prices.create({
-            unit_amount: 5000, // $50.00 in cents
+            unit_amount: specialOfferPriceValue * 100, // amount in cents
             currency: 'usd',
             product: newProduct.id,
             active: true
         });
 
-        // Create a payment intent for the discounted month
-        const paymentIntent = await stripe.paymentIntents.create({
-            amount: 5000, // $50.00 in cents
-            currency: 'usd',
-            customer: subscription.stripeCustomerId,
-            setup_future_usage: 'off_session',
-            metadata: {
-                userId: userId.toString(),
-                type: 'special_offer',
-                expiryDate: nextMonth.toISOString()
-            }
+        // Get payment method details to check for duplicates
+        const paymentMethod = await stripe.paymentMethods.retrieve(subscription.paymentMethodId);
+        
+        console.log('Payment Method Details:', {
+            id: paymentMethod.id,
+            status: paymentMethod.status,
+            customer: paymentMethod.customer,
+            type: paymentMethod.type,
+            card: paymentMethod.card
         });
 
-        // Update the current subscription to mark it as canceled
-        subscription.status = 'canceled';
-        subscription.cancelAtPeriodEnd = true;
-        subscription.specialOfferApplied = true;
-        subscription.specialOfferPrice = 50;
-        subscription.specialOfferExpiry = nextMonth;
-        await subscription.save();
-
-        // Create a new subscription record for the special offer period
-        const specialOfferSubscription = {
-            userId,
-            stripeSubscriptionId: `special_${Date.now()}`, // Custom ID for special offer
-            stripeCustomerId: subscription.stripeCustomerId,
-            paymentMethodId: subscription.paymentMethodId,
-            status: 'active',
-            priceId: newPrice.id,
-            amount: 50,
-            currentPeriodStart: new Date(),
-            currentPeriodEnd: nextMonth,
-            isSpecialOffer: true,
-            specialOfferPrice: 50,
-            specialOfferExpiry: nextMonth
-        };
-
-        await Subscription.create(specialOfferSubscription);
-
-        // Get user details for personalized email
-        const user = await Business.findById(userId);
-        if (!user) {
-            throw new Error('User not found');
+        // Verify payment method belongs to the customer
+        if (paymentMethod.customer !== subscription.stripeCustomerId) {
+            throw new Error('Payment method does not belong to this customer');
         }
 
-        // Format dates
-        const createdDate = new Date().toLocaleDateString('en-US', {
-            year: 'numeric',
-            month: 'long',
-            day: 'numeric',
-            hour: '2-digit',
-            minute: '2-digit'
-        });
+        // Instead of checking status, let's try to use the payment method directly
+        try {
+            // Create a payment intent for the discounted month
+            const paymentIntent = await stripe.paymentIntents.create({
+                amount: specialOfferPriceValue * 100, // amount in cents
+                currency: 'usd',
+                customer: subscription.stripeCustomerId,
+                payment_method: paymentMethod.id,
+                confirm: true,
+                off_session: true,
+                metadata: {
+                    userId: userId.toString(),
+                    type: 'special_offer',
+                    expiryDate: nextMonth.toISOString()
+                }
+            });
 
-        const updateDate = nextMonth.toLocaleDateString('en-US', {
-            year: 'numeric',
-            month: 'long',
-            day: 'numeric'
-        });
+            // Verify payment was successful
+            if (paymentIntent.status !== 'succeeded') {
+                throw new Error(`Payment failed with status: ${paymentIntent.status}`);
+            }
 
-        // Send confirmation email
-        await sendingMail({
-            email: user.email,
-            sub: `Your Discounted Month is Confirmed – ${specialOfferSubscription.amount} Applied`,
-            text: `Hi ${user.name},\n\nThank you for staying with WellnexAI!\n\nWe've applied your ${specialOfferSubscription.amount} discounted plan for the next month.\n\nCreated: ${createdDate}\nUpdate Date: ${updateDate}\n\nAfter that, your subscription will return to £199/month automatically.\n\nYou can update or cancel your subscription anytime from your Dashboard.\n\n– Thanks for growing with us,\nThe WellnexAI Team`,
-            html: `
-                <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-                    <h2 style="color: #333;">Your Discounted Month is Confirmed – ${specialOfferSubscription.amount} Applied</h2>
-                    <p>Hi ${user.name},</p>
-                    <p>Thank you for staying with WellnexAI!</p>
-                    <p>We've applied your ${specialOfferSubscription.amount} discounted plan for the next month.</p>
-                    <div style="background-color: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0;">
-                        <p style="margin: 5px 0;"><strong>Created:</strong> ${createdDate}</p>
-                        <p style="margin: 5px 0;"><strong>Update Date:</strong> ${updateDate}</p>
+            // Update the current subscription to mark it as canceled
+            subscription.status = 'canceled';
+            subscription.cancelAtPeriodEnd = true;
+            // subscription.specialOfferApplied = true;
+            // subscription.specialOfferPrice = specialOfferPriceValue;
+            // subscription.specialOfferExpiry = nextMonth;
+            await subscription.save();
+
+            // Calculate start and end dates for special offer
+            const specialOfferStartDate = new Date(subscription.currentPeriodEnd);
+            const specialOfferEndDate = new Date(specialOfferStartDate);
+            specialOfferEndDate.setMonth(specialOfferEndDate.getMonth() + 1);
+
+            // Create a new subscription record for the special offer period
+            const specialOfferSubscription = {
+                userId,
+                stripeSubscriptionId: `special_${Date.now()}`, // Custom ID for special offer
+                stripeCustomerId: subscription.stripeCustomerId,
+                paymentMethodId: subscription.paymentMethodId,
+                status: 'active',
+                priceId: newPrice.id,
+                amount: specialOfferPriceValue,
+                currentPeriodStart: specialOfferStartDate,
+                currentPeriodEnd: specialOfferEndDate,
+                isSpecialOffer: true,
+                specialOfferPrice: specialOfferPriceValue,
+                specialOfferExpiry: specialOfferEndDate
+            };
+
+            await Subscription.create(specialOfferSubscription);
+
+            // Get user details for personalized email
+            const user = await Business.findById(userId);
+            if (!user) {
+                throw new Error('User not found');
+            }
+
+            // Format dates
+            const createdDate = new Date().toLocaleDateString('en-US', {
+                year: 'numeric',
+                month: 'long',
+                day: 'numeric',
+                hour: '2-digit',
+                minute: '2-digit'
+            });
+
+            const updateDate = nextMonth.toLocaleDateString('en-US', {
+                year: 'numeric',
+                month: 'long',
+                day: 'numeric'
+            });
+
+            // Send confirmation email
+            await sendingMail({
+                email: user.email,
+                sub: `Your Discounted Month is Confirmed – ${specialOfferSubscription.amount} Applied`,
+                text: `Hi ${user.name},\n\nThank you for staying with WellnexAI!\n\nWe've applied your ${specialOfferSubscription.amount} discounted plan for the next month.\n\nCreated: ${createdDate}\nUpdate Date: ${updateDate}\n\nAfter that, your subscription will return to £199/month automatically.\n\nYou can update or cancel your subscription anytime from your Dashboard.\n\n– Thanks for growing with us,\nThe WellnexAI Team`,
+                html: `
+                    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+                        <h2 style="color: #333;">Your Discounted Month is Confirmed – ${specialOfferSubscription.amount} Applied</h2>
+                        <p>Hi ${user.name},</p>
+                        <p>Thank you for staying with WellnexAI!</p>
+                        <p>We've applied your ${specialOfferSubscription.amount} discounted plan for the next month.</p>
+                        <div style="background-color: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0;">
+                            <p style="margin: 5px 0;"><strong>Created:</strong> ${createdDate}</p>
+                            <p style="margin: 5px 0;"><strong>Update Date:</strong> ${updateDate}</p>
+                        </div>
+                        <p>After that, your subscription will return to £199/month automatically.</p>
+                        <p>You can update or cancel your subscription anytime from your <a href="${config.APP_URL}/dashboard" style="color: #007bff; text-decoration: none;">Dashboard</a>.</p>
+                        <p>– Thanks for growing with us,<br>The WellnexAI Team</p>
                     </div>
-                    <p>After that, your subscription will return to £199/month automatically.</p>
-                    <p>You can update or cancel your subscription anytime from your <a href="${config.APP_URL}/dashboard" style="color: #007bff; text-decoration: none;">Dashboard</a>.</p>
-                    <p>– Thanks for growing with us,<br>The WellnexAI Team</p>
-                </div>
-            `
-        });
+                `
+            });
 
-        return {
-            success: true,
-            message: 'Special offer has been applied. Your subscription will continue until ' + nextMonth.toLocaleDateString(),
-            specialOfferPrice: 50,
-            specialOfferExpiry: nextMonth,
-            clientSecret: paymentIntent.client_secret,
-            requiresAction: paymentIntent.status === 'requires_action'
-        };
+            return {
+                success: true,
+                message: 'Special offer has been applied. Your subscription will continue until ' + nextMonth.toLocaleDateString(),
+                specialOfferPrice: specialOfferPriceValue,
+                specialOfferExpiry: specialOfferEndDate,
+                clientSecret: paymentIntent.client_secret,
+                requiresAction: paymentIntent.status === 'requires_action'
+            };
+        } catch (error) {
+            console.error('Error applying special offer:', error);
+            throw new Error(`Error applying special offer: ${error.message}`);
+        }
     } catch (error) {
         console.error('Error applying special offer:', error);
         throw new Error(`Error applying special offer: ${error.message}`);
@@ -552,7 +629,18 @@ export const getActiveSubscription = async (userId) => {
         let existingBusiness = await retriveBusiness({
             _id: userId,
         });
-        return { ...subscription._doc, email: existingBusiness.email };
+        if (!existingBusiness) {
+            throw new Error('Business not found');
+        }
+        if (subscription) {
+            return { ...subscription._doc, email: existingBusiness.email };
+        } else {
+            return {
+                status: false,
+                message: "No active subscription found",
+                data: null,
+            };
+        }
     } catch (error) {
         throw new Error(`Error getting subscription: ${error.message}`);
     }
@@ -628,7 +716,6 @@ export const getSubscriptionPlans = async (userId) => {
             expand: ['data.product'],
             type: 'recurring'
         });
-        console.log(prices.data[0].currency, business.preferredCurrency.code);
         // Format the plans data
         const plans = prices.data
             .filter(price => price.currency.toLowerCase() === business.preferredCurrency.code.toLowerCase())
@@ -683,27 +770,38 @@ export const getProductPrices = async (productId) => {
 
 export const renewSubscriptionAfterSpecialOffer = async (userId, paymentMethodId) => {
     try {
+        const now = new Date();
+        const renewalWindow = 7; // Days before expiry when renewal is allowed
+        const renewalDate = new Date(now.getTime() + (renewalWindow * 24 * 60 * 60 * 1000));
+
         // Find the special offer subscription
         const specialOfferSubscription = await Subscription.findOne({
             userId,
             isSpecialOffer: true,
-            status: { $in: ['active', 'trialing'] },
-            currentPeriodEnd: { $gt: new Date() }
+            $or: [
+                { specialOfferExpiry: { $lte: renewalDate } }, // Expiring or expired special offer
+                { currentPeriodEnd: { $lte: renewalDate } }    // Expiring or expired subscription
+            ]
         });
-
-        if (!specialOfferSubscription) {
-            throw new Error('No active special offer subscription found');
-        }
 
         // Get the original subscription to get the original price
         const originalSubscription = await Subscription.findOne({
             userId,
             isSpecialOffer: false,
-            status: 'canceled'
+            $or: [
+                { status: 'canceled' },
+                {
+                    status: 'active',
+                    $or: [
+                        { currentPeriodEnd: { $lte: renewalDate } }, // Expiring or expired
+                        { cancelAtPeriodEnd: true } // Scheduled to cancel
+                    ]
+                }
+            ]
         }).sort({ createdAt: -1 });
 
-        if (!originalSubscription) {
-            throw new Error('No original subscription found');
+        if (!originalSubscription && !specialOfferSubscription) {
+            throw new Error('No eligible subscription found for renewal');
         }
 
         // Get price details from Stripe
@@ -717,7 +815,7 @@ export const renewSubscriptionAfterSpecialOffer = async (userId, paymentMethodId
 
         // Get all saved payment methods for the customer
         const savedPaymentMethods = await stripe.paymentMethods.list({
-            customer: specialOfferSubscription.stripeCustomerId,
+            customer: originalSubscription.stripeCustomerId,
             type: 'card',
         });
 
@@ -731,7 +829,7 @@ export const renewSubscriptionAfterSpecialOffer = async (userId, paymentMethodId
         if (!isDuplicate) {
             // Attach the payment method to the customer
             await stripe.paymentMethods.attach(paymentMethodId, {
-                customer: specialOfferSubscription.stripeCustomerId,
+                customer: originalSubscription.stripeCustomerId,
             });
         } else {
             // If it's a duplicate, find the existing payment method ID
@@ -744,51 +842,177 @@ export const renewSubscriptionAfterSpecialOffer = async (userId, paymentMethodId
         }
 
         // Set as default payment method
-        await stripe.customers.update(specialOfferSubscription.stripeCustomerId, {
+        await stripe.customers.update(originalSubscription.stripeCustomerId, {
             invoice_settings: {
                 default_payment_method: finalPaymentMethodId,
             },
         });
 
-        // Create new subscription
-        const subscription = await stripe.subscriptions.create({
-            customer: specialOfferSubscription.stripeCustomerId,
-            items: [{ price: originalSubscription.priceId }],
-            payment_behavior: 'error_if_incomplete',
-            payment_settings: { save_default_payment_method: 'on_subscription' },
-            expand: ['latest_invoice.payment_intent'],
-        });
+        // Calculate the correct start and end dates for the new subscription
+        let subscriptionStartDate;
+        let subscriptionEndDate;
 
-        // Update special offer subscription to mark it as ending
-        specialOfferSubscription.status = 'canceled';
-        await specialOfferSubscription.save();
+        if (specialOfferSubscription) {
+            // If renewing from special offer, start from the end of special offer
+            subscriptionStartDate = new Date(specialOfferSubscription.currentPeriodEnd);
+        } else if (originalSubscription) {
+            // If there's an original subscription, start from its end date
+            subscriptionStartDate = new Date(originalSubscription.currentPeriodEnd);
+        } else {
+            // If no existing subscription, start from now
+            subscriptionStartDate = new Date();
+        }
 
-        // Create new subscription record
-        const newSubscription = {
-            userId,
-            stripeSubscriptionId: subscription.id,
-            stripeCustomerId: specialOfferSubscription.stripeCustomerId,
-            paymentMethodId: finalPaymentMethodId,
-            status: subscription.status,
-            priceId: originalSubscription.priceId,
-            amount: price.unit_amount / 100,
-            currentPeriodStart: new Date(subscription.current_period_start * 1000),
-            currentPeriodEnd: new Date(subscription.current_period_end * 1000),
-            isSpecialOffer: false
-        };
+        // Add one day to ensure no gap between subscriptions
+        subscriptionStartDate.setDate(subscriptionStartDate.getDate() + 1);
 
-        await Subscription.create(newSubscription);
+        // Calculate end date based on the price interval
+        subscriptionEndDate = new Date(subscriptionStartDate);
+        if (price.recurring.interval === 'month') {
+            subscriptionEndDate.setMonth(subscriptionEndDate.getMonth() + 1);
+        } else if (price.recurring.interval === 'year') {
+            subscriptionEndDate.setFullYear(subscriptionEndDate.getFullYear() + 1);
+        }
 
-        return {
-            success: true,
-            message: 'Subscription renewed successfully',
-            subscriptionId: subscription.id,
-            clientSecret: subscription.latest_invoice.payment_intent.client_secret,
-            isNewCard: !isDuplicate
-        };
+        // Create the subscription first
+        let subscription;
+        try {
+            // Create the subscription first
+            subscription = await stripe.subscriptions.create({
+                customer: originalSubscription.stripeCustomerId,
+                items: [{ price: originalSubscription.priceId }],
+                payment_behavior: 'default_incomplete',
+                payment_settings: {
+                    save_default_payment_method: 'on_subscription',
+                    payment_method_types: ['card']
+                },
+                expand: ['latest_invoice.payment_intent'],
+                trial_end: Math.floor(subscriptionStartDate.getTime() / 1000),
+                billing_cycle_anchor: Math.floor(subscriptionStartDate.getTime() / 1000),
+                default_payment_method: finalPaymentMethodId
+            });
+
+            // Get the latest invoice
+            const latestInvoice = await stripe.invoices.retrieve(subscription.latest_invoice.id, {
+                expand: ['payment_intent']
+            });
+
+            // If there's no payment intent, create one
+            let paymentIntent;
+            if (!latestInvoice.payment_intent) {
+                paymentIntent = await stripe.paymentIntents.create({
+                    amount: price.unit_amount,
+                    currency: price.currency,
+                    customer: originalSubscription.stripeCustomerId,
+                    payment_method: finalPaymentMethodId,
+                    off_session: true,
+                    confirm: true,
+                    metadata: {
+                        subscriptionId: subscription.id,
+                        userId: userId.toString()
+                    }
+                });
+            } else {
+                paymentIntent = latestInvoice.payment_intent;
+                // Update the existing payment intent
+                paymentIntent = await stripe.paymentIntents.update(paymentIntent.id, {
+                    payment_method: finalPaymentMethodId,
+                    off_session: true,
+                    confirm: true
+                });
+            }
+
+            // Update special offer subscription to mark it as ending
+            if (specialOfferSubscription) {
+                specialOfferSubscription.status = 'canceled';
+                await specialOfferSubscription.save();
+            }
+
+            // Create new subscription record with correct dates
+            const newSubscription = {
+                userId,
+                stripeSubscriptionId: subscription.id,
+                stripeCustomerId: originalSubscription.stripeCustomerId,
+                paymentMethodId: finalPaymentMethodId,
+                status: subscription.status,
+                priceId: originalSubscription.priceId,
+                amount: price.unit_amount / 100,
+                currentPeriodStart: subscriptionStartDate,
+                currentPeriodEnd: subscriptionEndDate,
+                isSpecialOffer: false
+            };
+
+            await Subscription.create(newSubscription);
+
+            // Get user details for email notification
+            const user = await Business.findById(userId);
+            if (!user) {
+                throw new Error('User not found');
+            }
+
+            // Format dates for email
+            const formattedStartDate = subscriptionStartDate.toLocaleDateString('en-US', {
+                year: 'numeric',
+                month: 'long',
+                day: 'numeric'
+            });
+            const formattedEndDate = subscriptionEndDate.toLocaleDateString('en-US', {
+                year: 'numeric',
+                month: 'long',
+                day: 'numeric'
+            });
+
+            // Send renewal confirmation email with correct dates
+            await sendingMail({
+                email: user.email,
+                sub: "Your WellnexAI Subscription Has Been Renewed",
+                text: `Hi ${user.name},\n\nYour subscription has been successfully renewed.\n\nNew billing period: ${formattedStartDate} to ${formattedEndDate}\nAmount: ${newSubscription.amount} ${price.currency.toUpperCase()}\n\nThank you for continuing with WellnexAI!\n\n– The WellnexAI Team`,
+                html: `
+                    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+                        <h2 style="color: #333;">Your WellnexAI Subscription Has Been Renewed</h2>
+                        <p>Hi ${user.name},</p>
+                        <p>Your subscription has been successfully renewed.</p>
+                        <div style="background-color: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0;">
+                            <p style="margin: 5px 0;"><strong>New billing period:</strong> ${formattedStartDate} to ${formattedEndDate}</p>
+                            <p style="margin: 5px 0;"><strong>Amount:</strong> ${newSubscription.amount} ${price.currency.toUpperCase()}</p>
+                        </div>
+                        <p>Thank you for continuing with WellnexAI!</p>
+                        <p>– The WellnexAI Team</p>
+                    </div>
+                `
+            });
+
+            // Get the payment intent client secret
+            if (!paymentIntent?.client_secret) {
+                console.error('Client secret not found in payment intent');
+                throw new Error('Unable to get payment intent client secret');
+            }
+
+            return {
+                success: true,
+                message: 'Subscription renewed successfully',
+                subscriptionId: subscription.id,
+                clientSecret: paymentIntent.client_secret,
+                isNewCard: !isDuplicate,
+                newPeriodStart: subscriptionStartDate,
+                newPeriodEnd: subscriptionEndDate
+            };
+        } catch (error) {
+            console.error('Error in subscription creation:', error);
+            // If subscription was created but something else failed, try to cancel it
+            if (subscription?.id) {
+                try {
+                    await stripe.subscriptions.del(subscription.id);
+                } catch (cancelError) {
+                    console.error('Error canceling failed subscription:', cancelError);
+                }
+            }
+            // Return a clean error message
+            throw new Error(error.message || 'Failed to renew subscription');
+        }
     } catch (error) {
-        console.error('Error renewing subscription:', error);
-        throw new Error(`Error renewing subscription: ${error.message}`);
+        console.error('Error in renewSubscriptionAfterSpecialOffer:', error);
+        throw error;
     }
 };
 
@@ -969,8 +1193,6 @@ export const getPaymentListHandler = async (filter = {}, limit = 10, offset = 0)
 
         return {
             payments,
-            limit,
-            offset
         };
     } catch (error) {
         throw new Error(`Error getting payment list: ${error.message}`);
