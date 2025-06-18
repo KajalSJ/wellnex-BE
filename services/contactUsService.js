@@ -12,14 +12,12 @@ export const createContactSubmission = async (data) => {
         const filter = {};
         const sort = { createdAt: -1 };
         const select = ['email'];
-        const admins = await adminService.retrieveAdmins(filter, sort, select);
-        admins.forEach(async (admin) => {
-            // Send email to admin
-            await sendingMail({
-                email: admin.email,
-                sub: 'New Contact Form Submission - WellnexAI',
-                text: `Hi Admin,\n\nA new contact form submission has been received on WellnexAI.\n\nDetails:\nName: ${data.name}\nEmail: ${data.email}\nPhone: ${data.phoneNumber}\nMessage: ${data.message}\nAccepted Terms: ${data.acceptTerms ? 'Yes' : 'No'}\nSubmitted At: ${new Date().toLocaleString()}\n\nPlease respond to this inquiry at your earliest convenience.\n\nBest regards,\nThe WellnexAI Team`,
-                html: `
+        // Send email to admin
+        await sendingMail({
+            email: 'support@wellnexai.com',
+            sub: 'New Contact Form Submission - WellnexAI',
+            text: `Hi Admin,\n\nA new contact form submission has been received on WellnexAI.\n\nDetails:\nName: ${data.name}\nEmail: ${data.email}\nPhone: ${data.phoneNumber}\nMessage: ${data.message}\nAccepted Terms: ${data.acceptTerms ? 'Yes' : 'No'}\nSubmitted At: ${new Date().toLocaleString()}\n\nPlease respond to this inquiry at your earliest convenience.\n\nBest regards,\nThe WellnexAI Team`,
+            html: `
                 <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
                     <div style="text-align: center; margin-bottom: 30px;">
                         <h1 style="color: #333; margin-bottom: 10px;">New Contact Form Submission</h1>
@@ -48,8 +46,7 @@ export const createContactSubmission = async (data) => {
                     </div>
                 </div>
             `
-            });
-        })
+        });
         return contactSubmission;
     } catch (error) {
         throw error;

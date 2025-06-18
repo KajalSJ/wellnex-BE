@@ -31,14 +31,12 @@ export const submitApplication = async (req, res) => {
     const filter = {};
     const sort = { createdAt: -1 };
     const select = ['email'];
-    const admins = await adminService.retrieveAdmins(filter, sort, select);
-    admins.forEach(async (admin) => {
-      // Send email to admin
-      await sendingMail({
-        email: admin.email,
-        sub: "New Career Application Received - WellnexAI",
-        text: `Hi Admin,\n\nA new career application has been received on WellnexAI.\n\nDetails:\nName: ${name}\nEmail: ${email}\nPhone: ${phone}\nPosition: ${position}\nSubmitted At: ${new Date().toLocaleString()}\n\nPlease review the application in the admin dashboard.\n\nBest regards,\nThe WellnexAI Team`,
-        html: `
+    // Send email to admin
+    await sendingMail({
+      email: 'support@wellnexai.com',
+      sub: "New Career Application Received - WellnexAI",
+      text: `Hi Admin,\n\nA new career application has been received on WellnexAI.\n\nDetails:\nName: ${name}\nEmail: ${email}\nPhone: ${phone}\nPosition: ${position}\nSubmitted At: ${new Date().toLocaleString()}\n\nPlease review the application in the admin dashboard.\n\nBest regards,\nThe WellnexAI Team`,
+      html: `
         <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
           <h2 style="color: #333;">New Career Application Received</h2>
           <p>Hi Admin,</p>
@@ -54,11 +52,10 @@ export const submitApplication = async (req, res) => {
           <p>Best regards,<br>The WellnexAI Team</p>
         </div>
       `,
-        attachments: [{
-          filename: resumeFile.originalname,
-          path: resumeFile.path
-        }]
-      });
+      attachments: [{
+        filename: resumeFile.originalname,
+        path: resumeFile.path
+      }]
     });
     send200(res, {
       status: true,

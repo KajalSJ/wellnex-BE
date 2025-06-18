@@ -6,8 +6,6 @@ import businessService from './business.service.js';
 import currencyModel from '../models/currency.model.js';
 import path from 'path';
 import __dirname from "../configurations/dir.config.js";
-import responseHelper from '../helpers/response.helper.js';
-const { send400, } = responseHelper;
 import config from "../configurations/app.config.js";
 import adminService from './admin.service.js';
 
@@ -55,15 +53,15 @@ export const createSubscription = async (userId, paymentMethodId, priceId) => {
         }
         const subscriptionActive = await Subscription.findOne({
             userId: userId,
-            status: { $in: ['active', 'trialing'] },
+            status: { $in: ['active', 'trialing', 'canceled'] },
             currentPeriodEnd: { $gt: new Date() }
         });
         if (subscriptionActive) {
-            return send400(res, {
+            return {
                 status: false,
                 message: "Business already has an active subscription",
                 data: subscriptionActive,
-            });
+            };
         }
         // Get the price from Stripe to verify currency
         const price = await stripe.prices.retrieve(priceId);
@@ -235,22 +233,27 @@ export const createSubscription = async (userId, paymentMethodId, priceId) => {
                         <p style="margin: 5px 0;"><strong>Amount:</strong> ${price.unit_amount / 100} ${price.currency.toUpperCase()}</p>
                         <p style="margin: 5px 0;"><strong>Date:</strong> ${today}</p>
                     </div>
-                    <p>You can view or manage your billing at any time via your <a href="${process.env.APP_URL}/dashboard" style="color: #007bff; text-decoration: none;">Dashboard</a>.</p>
+                    <p>You can view or manage your billing at any time via your <a href="https://wellnexai.com/dashboard" style="color: #007bff; text-decoration: none;">Dashboard</a>.</p>
                     <p>Questions? Email <a href="mailto:support@wellnexai.com" style="color: #007bff; text-decoration: none;">support@wellnexai.com</a></p>
                     <p>Thanks for being part of the WellnexAI community!</p>
                 </div>
             `
         });
 
-        // Send embed code email
-        const embedCode = `&lt;script src="https://wellnexai.com/chatbot.js" data-business-id="${business._id}"&gt;&lt;/script&gt;
+        const subscriptionCount = await Subscription.countDocuments({
+            userId: userId,
+        });
+
+        if (subscriptionCount === 1) {
+            // Send embed code email
+            const embedCode = `&lt;script src="https://wellnexai.com/chatbot.js" data-business-id="${business._id}"&gt;&lt;/script&gt;
         &lt;link rel="stylesheet" href="https://wellnexai.com/chatbot.css"/&gt;`;
 
-        await sendingMail({
-            email: business.email,
-            sub: "Your WellnexAI chatbot code is ready",
-            text: `Hi ${business.name},\n\nYour chatbot is live!\n\nHere's your unique chatbot embed code — copy and paste it into your site:\n\n${embedCode}\n\nWhere to place it: before the closing </body> tag\n\nNeed help? Visit our support portal or reply to this email.\n\nLet's convert more visitors into bookings!\n\n– The WellnexAI Team`,
-            html: `
+            sendingMail({
+                email: business.email,
+                sub: "Your WellnexAI chatbot code is ready",
+                text: `Hi ${business.name},\n\nYour chatbot is live!\n\nHere's your unique chatbot embed code — copy and paste it into your site:\n\n${embedCode}\n\nWhere to place it: before the closing </body> tag\n\nNeed help? Visit our support portal or reply to this email.\n\nLet's convert more visitors into bookings!\n\n– The WellnexAI Team`,
+                html: `
                 <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
                     <h2 style="color: #333;">Your WellnexAI chatbot code is ready</h2>
                     <p>Hi ${business.name},</p>
@@ -265,12 +268,12 @@ export const createSubscription = async (userId, paymentMethodId, priceId) => {
                     <p>– The WellnexAI Team</p>
                 </div>
             `,
-            attachments: [{
-                filename: 'How_to_Install.pdf',
-                path: path.join(__dirname, '../public/How_to_Install.pdf')
-            }]
-        });
-
+                attachments: [{
+                    filename: 'How_to_Install.pdf',
+                    path: path.join(__dirname, '../public/How_to_Install.pdf')
+                }]
+            });
+        }
         return {
             subscriptionId: subscription.id,
             clientSecret: subscription.latest_invoice.payment_intent.client_secret,
@@ -324,11 +327,21 @@ export const checkSpecialOfferPrice = async (userId) => {
     const subscription = await Subscription.findOne({
         userId,
         status: { $in: ['active', 'trialing'] },
-        isSpecialOffer: false,
+        currentPeriodEnd: { $gt: new Date() },
     });
 
     if (!subscription) {
         throw new Error('No active subscription found');
+    }
+    if (subscription.isSpecialOffer) {
+        return {
+            success: true,
+            message: 'Special offer already applied.',
+            hasSpecialOffer: true,
+            isSpecialOffer: subscription.isSpecialOffer,
+            specialOfferPrice: subscription.specialOfferPrice,
+            currentPeriodEnd: subscription.currentPeriodEnd
+        };
     }
     if (subscription.hasReceivedSpecialOffer && subscription.specialOfferApplied) {
         return {
@@ -359,7 +372,10 @@ export const cancelSubscription = async (userId) => {
         // Find the active subscription
         const subscription = await Subscription.findOne({
             userId,
-            status: { $in: ['active', 'trialing'] },
+            $or: [
+                { status: { $in: ['active', 'trialing', 'paused'] } },
+                { status: 'canceled', currentPeriodEnd: { $gt: new Date() } }
+            ],
             isSpecialOffer: false,
         });
 
@@ -409,17 +425,12 @@ export const cancelSubscription = async (userId) => {
             `
         });
 
-        const filter = {};
-        const sort = { createdAt: -1 };
-        const select = ['email'];
-        const admins = await adminService.retrieveAdmins(filter, sort, select);
-        admins.forEach(async (admin) => {
-            // Send email to admin
-            await sendingMail({
-                email: admin.email,
-                sub: `Subscription Cancellation Alert - ${user.name}`,
-                text: `A user has cancelled their subscription:\n\nUser Details:\nName: ${user.name}\nEmail: ${user.email}\nSubscription End Date: ${endDate}\n\nThis is an automated notification.`,
-                html: `
+        // Send email to admin
+        await sendingMail({
+            email: 'support@wellnexai.com',
+            sub: `Subscription Cancellation Alert - ${user.name}`,
+            text: `A user has cancelled their subscription:\n\nUser Details:\nName: ${user.name}\nEmail: ${user.email}\nSubscription End Date: ${endDate}\n\nThis is an automated notification.`,
+            html: `
                 <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
                     <h2 style="color: #333;">Subscription Cancellation Alert</h2>
                     <p>A user has cancelled their subscription:</p>
@@ -431,7 +442,6 @@ export const cancelSubscription = async (userId) => {
                     <p>This is an automated notification.</p>
                 </div>
             `
-            });
         });
         return {
             success: true,
@@ -444,7 +454,94 @@ export const cancelSubscription = async (userId) => {
         throw new Error(`Error canceling subscription: ${error.message}`);
     }
 };
-
+export const cancelSubscriptionImmediately = async (userId) => {
+    try {
+        const subscription = await Subscription.findOne({
+            userId,
+            $or: [
+                { status: { $in: ['active', 'trialing', 'paused'] } },
+                { status: 'canceled', currentPeriodEnd: { $gt: new Date() } }
+            ],
+        });
+        if (!subscription) {
+            throw new Error('No subscription found');
+        }
+        await stripe.subscriptions.cancel(
+            subscription.stripeSubscriptionId,
+        );
+        await Subscription.findOneAndUpdate(
+            { stripeSubscriptionId: subscription.stripeSubscriptionId },
+            { status: 'canceled' }
+        );
+        return {
+            success: true,
+            message: 'Subscription will be canceled immediately',
+            cancelAtPeriodEnd: false,
+        };
+    } catch (error) {
+        console.error('Error canceling subscription:', error);
+        throw new Error(`Error canceling subscription: ${error.message}`);
+    }
+};
+export const pauseSubscription = async (userId) => {
+    try {
+        const subscription = await Subscription.findOne({
+            userId,
+            $or: [
+                { status: { $in: ['active', 'trialing'] } },
+                { status: 'canceled', currentPeriodEnd: { $gt: new Date() } }
+            ],
+            isSpecialOffer: false,
+        });
+        if (!subscription) {
+            throw new Error('No subscription found');
+        }
+        await stripe.subscriptions.update(
+            subscription.stripeSubscriptionId,
+            { pause_collection: { behavior: 'mark_uncollectible' } }
+        );
+        await Subscription.findOneAndUpdate(
+            { stripeSubscriptionId: subscription.stripeSubscriptionId },
+            { status: 'paused' }
+        );
+        return {
+            success: true,
+            message: 'Subscription will be paused',
+            pauseCollection: { behavior: 'mark_uncollectible' },
+        };
+    } catch (error) {
+        console.error('Error pausing subscription:', error);
+        throw new Error(`Error pausing subscription: ${error.message}`);
+    }
+};
+export const resumeSubscription = async (userId) => {
+    try {
+        const subscription = await Subscription.findOne({
+            userId,
+            status: { $in: ['canceled', 'paused'] },
+            isSpecialOffer: false,
+        });
+        if (!subscription) {
+            throw new Error('No subscription found');
+        }
+        await stripe.subscriptions.update(
+            subscription.stripeSubscriptionId,
+            { pause_collection: null }
+        );
+        await Subscription.findOneAndUpdate(
+            { stripeSubscriptionId: subscription.stripeSubscriptionId },
+            { status: 'active' }
+        );
+        return {
+            success: true,
+            message: 'Subscription will be resumed',
+            pauseCollection: null,
+        };
+    } catch (error) {
+        console.error('Error resuming subscription:', error);
+        throw new Error(`Error resuming subscription: ${error.message}`);
+    }
+};
 export const applySpecialOffer = async (userId) => {
     try {
         const subscription = await Subscription.findOne({
@@ -469,7 +566,7 @@ export const applySpecialOffer = async (userId) => {
         nextMonth.setMonth(nextMonth.getMonth() + 1);
 
         // First, cancel the current subscription
-        await stripe.subscriptions.update(
+        const stripeSubscription = await stripe.subscriptions.update(
             subscription.stripeSubscriptionId,
             { cancel_at_period_end: true }
         );
@@ -491,15 +588,6 @@ export const applySpecialOffer = async (userId) => {
 
         // Get payment method details to check for duplicates
         const paymentMethod = await stripe.paymentMethods.retrieve(subscription.paymentMethodId);
-        
-        console.log('Payment Method Details:', {
-            id: paymentMethod.id,
-            status: paymentMethod.status,
-            customer: paymentMethod.customer,
-            type: paymentMethod.type,
-            card: paymentMethod.card
-        });
-
         // Verify payment method belongs to the customer
         if (paymentMethod.customer !== subscription.stripeCustomerId) {
             throw new Error('Payment method does not belong to this customer');
@@ -528,7 +616,7 @@ export const applySpecialOffer = async (userId) => {
             }
 
             // Update the current subscription to mark it as canceled
-            subscription.status = 'canceled';
+            subscription.status = stripeSubscription.status;
             subscription.cancelAtPeriodEnd = true;
             // subscription.specialOfferApplied = true;
             // subscription.specialOfferPrice = specialOfferPriceValue;
@@ -583,7 +671,7 @@ export const applySpecialOffer = async (userId) => {
             await sendingMail({
                 email: user.email,
                 sub: `Your Discounted Month is Confirmed – ${specialOfferSubscription.amount} Applied`,
-                text: `Hi ${user.name},\n\nThank you for staying with WellnexAI!\n\nWe've applied your ${specialOfferSubscription.amount} discounted plan for the next month.\n\nCreated: ${createdDate}\nUpdate Date: ${updateDate}\n\nAfter that, your subscription will return to £199/month automatically.\n\nYou can update or cancel your subscription anytime from your Dashboard.\n\n– Thanks for growing with us,\nThe WellnexAI Team`,
+                text: `Hi ${user.name},\n\nThank you for staying with WellnexAI!\n\nWe've applied your ${specialOfferSubscription.amount} discounted plan for the next month.\n\nCreated: ${createdDate}\n\nAfter that, your subscription will return to £199/month automatically.\n\nYou can update or cancel your subscription anytime from your Dashboard.\n\n– Thanks for growing with us,\nThe WellnexAI Team`,
                 html: `
                     <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
                         <h2 style="color: #333;">Your Discounted Month is Confirmed – ${specialOfferSubscription.amount} Applied</h2>
@@ -592,10 +680,10 @@ export const applySpecialOffer = async (userId) => {
                         <p>We've applied your ${specialOfferSubscription.amount} discounted plan for the next month.</p>
                         <div style="background-color: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0;">
                             <p style="margin: 5px 0;"><strong>Created:</strong> ${createdDate}</p>
-                            <p style="margin: 5px 0;"><strong>Update Date:</strong> ${updateDate}</p>
-                        </div>
-                        <p>After that, your subscription will return to £199/month automatically.</p>
-                        <p>You can update or cancel your subscription anytime from your <a href="${config.APP_URL}/dashboard" style="color: #007bff; text-decoration: none;">Dashboard</a>.</p>
+                            <p style="margin: 5px 0;"><strong>Start Date:</strong> ${specialOfferSubscription.currentPeriodStart}</p>
+                            <p style="margin: 5px 0;"><strong>End Date:</strong> ${specialOfferSubscription.currentPeriodEnd}</p>
+                         </div> 
+                        <p>To continue enjoying our services, please renew your subscription after the offer expires through your <a href="https://wellnexai.com/dashboard" style="color: #007bff; text-decoration: none;">dashboard</a>.</p>
                         <p>– Thanks for growing with us,<br>The WellnexAI Team</p>
                     </div>
                 `
@@ -635,6 +723,17 @@ export const getActiveSubscription = async (userId) => {
         if (subscription) {
             return { ...subscription._doc, email: existingBusiness.email };
         } else {
+            const subscriptionPaused = await Subscription.findOne({
+                userId,
+                status: { $in: ['paused'] },
+            });
+            if (subscriptionPaused) {
+                return {
+                    status: false,
+                    message: "Your subscription is paused. Please contact admin.",
+                    data: null,
+                };
+            }
             return {
                 status: false,
                 message: "No active subscription found",
@@ -650,6 +749,31 @@ export const handleWebhookEvent = async (event) => {
     try {
         switch (event.type) {
             case 'customer.subscription.updated':
+                const subscriptionUpdated = event.data.object;
+                if (subscriptionUpdated.pause_collection) {
+                    // mark user paused
+                    await Subscription.findOneAndUpdate(
+                        { stripeSubscriptionId: subscriptionUpdated.id },
+                        {
+                            status: subscriptionUpdated.status,
+                            currentPeriodStart: new Date(subscriptionUpdated.current_period_start * 1000),
+                            currentPeriodEnd: new Date(subscriptionUpdated.current_period_end * 1000),
+                            cancelAtPeriodEnd: subscriptionUpdated.cancel_at_period_end
+                        }
+                    );
+                } else {
+                    // mark user active
+                    await Subscription.findOneAndUpdate(
+                        { stripeSubscriptionId: subscriptionUpdated.id },
+                        {
+                            status: subscriptionUpdated.status,
+                            currentPeriodStart: new Date(subscriptionUpdated.current_period_start * 1000),
+                            currentPeriodEnd: new Date(subscriptionUpdated.current_period_end * 1000),
+                            cancelAtPeriodEnd: subscriptionUpdated.cancel_at_period_end
+                        }
+                    );
+                }
+                break;
             case 'customer.subscription.deleted':
                 const subscription = event.data.object;
                 await Subscription.findOneAndUpdate(
@@ -662,8 +786,28 @@ export const handleWebhookEvent = async (event) => {
                     }
                 );
                 break;
+            case 'invoice.paid':
+                const invoice = event.data.object;
+                // Only process if this is a subscription invoice
+                if (invoice.subscription) {
+                    // Get the subscription details from Stripe
+                    const stripeSubscription = await stripe.subscriptions.retrieve(invoice.subscription);
+
+                    // Update the subscription in our database with new period dates
+                    await Subscription.findOneAndUpdate(
+                        { stripeSubscriptionId: invoice.subscription },
+                        {
+                            currentPeriodStart: new Date(stripeSubscription.current_period_start * 1000),
+                            currentPeriodEnd: new Date(stripeSubscription.current_period_end * 1000),
+                            status: stripeSubscription.status,
+                            cancelAtPeriodEnd: stripeSubscription.cancel_at_period_end
+                        }
+                    );
+                }
+                break;
         }
     } catch (error) {
+        console.error('Error handling webhook:', error);
         throw new Error(`Error handling webhook: ${error.message}`);
     }
 };
@@ -770,17 +914,17 @@ export const getProductPrices = async (productId) => {
 
 export const renewSubscriptionAfterSpecialOffer = async (userId, paymentMethodId) => {
     try {
-        const now = new Date();
-        const renewalWindow = 7; // Days before expiry when renewal is allowed
-        const renewalDate = new Date(now.getTime() + (renewalWindow * 24 * 60 * 60 * 1000));
+        const business = await Business.findById({ _id: userId }).populate('preferredCurrency');
+        if (!business) {
+            throw new Error('Business not found');
+        }
 
-        // Find the special offer subscription
         const specialOfferSubscription = await Subscription.findOne({
             userId,
             isSpecialOffer: true,
             $or: [
-                { specialOfferExpiry: { $lte: renewalDate } }, // Expiring or expired special offer
-                { currentPeriodEnd: { $lte: renewalDate } }    // Expiring or expired subscription
+                { specialOfferExpiry: { $lte: new Date() } }, // Expiring or expired special offer
+                { currentPeriodEnd: { $lte: new Date() } }    // Expiring or expired subscription
             ]
         });
 
@@ -793,7 +937,7 @@ export const renewSubscriptionAfterSpecialOffer = async (userId, paymentMethodId
                 {
                     status: 'active',
                     $or: [
-                        { currentPeriodEnd: { $lte: renewalDate } }, // Expiring or expired
+                        { currentPeriodEnd: { $lte: new Date() } }, // Expiring or expired
                         { cancelAtPeriodEnd: true } // Scheduled to cancel
                     ]
                 }
@@ -804,215 +948,219 @@ export const renewSubscriptionAfterSpecialOffer = async (userId, paymentMethodId
             throw new Error('No eligible subscription found for renewal');
         }
 
-        // Get price details from Stripe
+        // Get the price from Stripe to verify currency
         const price = await stripe.prices.retrieve(originalSubscription.priceId);
-        if (!price) {
-            throw new Error('Original price not found');
+
+        // Verify if the price currency matches the business's preferred currency
+        if (price.currency.toLowerCase() !== business.preferredCurrency.code.toLowerCase()) {
+            throw new Error(`Price currency (${price.currency}) does not match business preferred currency (${business.preferredCurrency.code})`);
         }
 
         // Get payment method details to check for duplicates
         const paymentMethod = await stripe.paymentMethods.retrieve(paymentMethodId);
-
-        // Get all saved payment methods for the customer
-        const savedPaymentMethods = await stripe.paymentMethods.list({
-            customer: originalSubscription.stripeCustomerId,
-            type: 'card',
-        });
-
-        // Check if this card is already saved
-        const isDuplicate = savedPaymentMethods.data.some(savedMethod =>
-            savedMethod.card.fingerprint === paymentMethod.card.fingerprint
-        );
-
         let finalPaymentMethodId = paymentMethodId;
+        let isDuplicate = false;
 
-        if (!isDuplicate) {
-            // Attach the payment method to the customer
-            await stripe.paymentMethods.attach(paymentMethodId, {
-                customer: originalSubscription.stripeCustomerId,
+        // Create or get customer
+        let customer;
+        if (business.stripeCustomerId) {
+            customer = await stripe.customers.retrieve(business.stripeCustomerId);
+
+            // Check for any existing subscriptions
+            const existingSubscriptions = await stripe.subscriptions.list({
+                customer: business.stripeCustomerId,
+                status: 'active',
+                limit: 100
             });
-        } else {
-            // If it's a duplicate, find the existing payment method ID
-            const existingMethod = savedPaymentMethods.data.find(
-                savedMethod => savedMethod.card.fingerprint === paymentMethod.card.fingerprint
-            );
-            if (existingMethod) {
-                finalPaymentMethodId = existingMethod.id;
+
+            // Check for subscription schedules
+            const subscriptionSchedules = await stripe.subscriptionSchedules.list({
+                customer: business.stripeCustomerId,
+                limit: 100
+            });
+
+            // Check for quotes
+            const quotes = await stripe.quotes.list({
+                customer: business.stripeCustomerId,
+                status: 'open',
+                limit: 100
+            });
+
+            // Check for invoice items
+            const invoiceItems = await stripe.invoiceItems.list({
+                customer: business.stripeCustomerId,
+                limit: 100
+            });
+
+            // Check all resources for currency conflicts
+            const checkCurrency = (resource, resourceType) => {
+                if (resource.currency && resource.currency.toLowerCase() !== price.currency.toLowerCase()) {
+                    throw new Error(`Cannot create subscription in ${price.currency} because customer has an active ${resourceType} in ${resource.currency}. Please cancel or complete all existing ${resourceType}s first.`);
+                }
+            };
+
+            // Check subscriptions
+            for (const sub of existingSubscriptions.data) {
+                const subPrice = await stripe.prices.retrieve(sub.items.data[0].price.id);
+                checkCurrency(subPrice, 'subscription');
             }
-        }
 
-        // Set as default payment method
-        await stripe.customers.update(originalSubscription.stripeCustomerId, {
-            invoice_settings: {
-                default_payment_method: finalPaymentMethodId,
-            },
-        });
-
-        // Calculate the correct start and end dates for the new subscription
-        let subscriptionStartDate;
-        let subscriptionEndDate;
-
-        if (specialOfferSubscription) {
-            // If renewing from special offer, start from the end of special offer
-            subscriptionStartDate = new Date(specialOfferSubscription.currentPeriodEnd);
-        } else if (originalSubscription) {
-            // If there's an original subscription, start from its end date
-            subscriptionStartDate = new Date(originalSubscription.currentPeriodEnd);
-        } else {
-            // If no existing subscription, start from now
-            subscriptionStartDate = new Date();
-        }
-
-        // Add one day to ensure no gap between subscriptions
-        subscriptionStartDate.setDate(subscriptionStartDate.getDate() + 1);
-
-        // Calculate end date based on the price interval
-        subscriptionEndDate = new Date(subscriptionStartDate);
-        if (price.recurring.interval === 'month') {
-            subscriptionEndDate.setMonth(subscriptionEndDate.getMonth() + 1);
-        } else if (price.recurring.interval === 'year') {
-            subscriptionEndDate.setFullYear(subscriptionEndDate.getFullYear() + 1);
-        }
-
-        // Create the subscription first
-        let subscription;
-        try {
-            // Create the subscription first
-            subscription = await stripe.subscriptions.create({
-                customer: originalSubscription.stripeCustomerId,
-                items: [{ price: originalSubscription.priceId }],
-                payment_behavior: 'default_incomplete',
-                payment_settings: {
-                    save_default_payment_method: 'on_subscription',
-                    payment_method_types: ['card']
-                },
-                expand: ['latest_invoice.payment_intent'],
-                trial_end: Math.floor(subscriptionStartDate.getTime() / 1000),
-                billing_cycle_anchor: Math.floor(subscriptionStartDate.getTime() / 1000),
-                default_payment_method: finalPaymentMethodId
-            });
-
-            // Get the latest invoice
-            const latestInvoice = await stripe.invoices.retrieve(subscription.latest_invoice.id, {
-                expand: ['payment_intent']
-            });
-
-            // If there's no payment intent, create one
-            let paymentIntent;
-            if (!latestInvoice.payment_intent) {
-                paymentIntent = await stripe.paymentIntents.create({
-                    amount: price.unit_amount,
-                    currency: price.currency,
-                    customer: originalSubscription.stripeCustomerId,
-                    payment_method: finalPaymentMethodId,
-                    off_session: true,
-                    confirm: true,
-                    metadata: {
-                        subscriptionId: subscription.id,
-                        userId: userId.toString()
+            // Check subscription schedules
+            for (const schedule of subscriptionSchedules.data) {
+                if (schedule.phases && schedule.phases[0].items) {
+                    for (const item of schedule.phases[0].items) {
+                        const schedulePrice = await stripe.prices.retrieve(item.price);
+                        checkCurrency(schedulePrice, 'subscription schedule');
                     }
-                });
-            } else {
-                paymentIntent = latestInvoice.payment_intent;
-                // Update the existing payment intent
-                paymentIntent = await stripe.paymentIntents.update(paymentIntent.id, {
-                    payment_method: finalPaymentMethodId,
-                    off_session: true,
-                    confirm: true
-                });
-            }
-
-            // Update special offer subscription to mark it as ending
-            if (specialOfferSubscription) {
-                specialOfferSubscription.status = 'canceled';
-                await specialOfferSubscription.save();
-            }
-
-            // Create new subscription record with correct dates
-            const newSubscription = {
-                userId,
-                stripeSubscriptionId: subscription.id,
-                stripeCustomerId: originalSubscription.stripeCustomerId,
-                paymentMethodId: finalPaymentMethodId,
-                status: subscription.status,
-                priceId: originalSubscription.priceId,
-                amount: price.unit_amount / 100,
-                currentPeriodStart: subscriptionStartDate,
-                currentPeriodEnd: subscriptionEndDate,
-                isSpecialOffer: false
-            };
-
-            await Subscription.create(newSubscription);
-
-            // Get user details for email notification
-            const user = await Business.findById(userId);
-            if (!user) {
-                throw new Error('User not found');
-            }
-
-            // Format dates for email
-            const formattedStartDate = subscriptionStartDate.toLocaleDateString('en-US', {
-                year: 'numeric',
-                month: 'long',
-                day: 'numeric'
-            });
-            const formattedEndDate = subscriptionEndDate.toLocaleDateString('en-US', {
-                year: 'numeric',
-                month: 'long',
-                day: 'numeric'
-            });
-
-            // Send renewal confirmation email with correct dates
-            await sendingMail({
-                email: user.email,
-                sub: "Your WellnexAI Subscription Has Been Renewed",
-                text: `Hi ${user.name},\n\nYour subscription has been successfully renewed.\n\nNew billing period: ${formattedStartDate} to ${formattedEndDate}\nAmount: ${newSubscription.amount} ${price.currency.toUpperCase()}\n\nThank you for continuing with WellnexAI!\n\n– The WellnexAI Team`,
-                html: `
-                    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-                        <h2 style="color: #333;">Your WellnexAI Subscription Has Been Renewed</h2>
-                        <p>Hi ${user.name},</p>
-                        <p>Your subscription has been successfully renewed.</p>
-                        <div style="background-color: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0;">
-                            <p style="margin: 5px 0;"><strong>New billing period:</strong> ${formattedStartDate} to ${formattedEndDate}</p>
-                            <p style="margin: 5px 0;"><strong>Amount:</strong> ${newSubscription.amount} ${price.currency.toUpperCase()}</p>
-                        </div>
-                        <p>Thank you for continuing with WellnexAI!</p>
-                        <p>– The WellnexAI Team</p>
-                    </div>
-                `
-            });
-
-            // Get the payment intent client secret
-            if (!paymentIntent?.client_secret) {
-                console.error('Client secret not found in payment intent');
-                throw new Error('Unable to get payment intent client secret');
-            }
-
-            return {
-                success: true,
-                message: 'Subscription renewed successfully',
-                subscriptionId: subscription.id,
-                clientSecret: paymentIntent.client_secret,
-                isNewCard: !isDuplicate,
-                newPeriodStart: subscriptionStartDate,
-                newPeriodEnd: subscriptionEndDate
-            };
-        } catch (error) {
-            console.error('Error in subscription creation:', error);
-            // If subscription was created but something else failed, try to cancel it
-            if (subscription?.id) {
-                try {
-                    await stripe.subscriptions.del(subscription.id);
-                } catch (cancelError) {
-                    console.error('Error canceling failed subscription:', cancelError);
                 }
             }
-            // Return a clean error message
-            throw new Error(error.message || 'Failed to renew subscription');
+
+            // Check quotes
+            for (const quote of quotes.data) {
+                checkCurrency(quote, 'quote');
+            }
+
+            // Check invoice items
+            for (const item of invoiceItems.data) {
+                checkCurrency(item, 'invoice item');
+            }
+
+            // Get all saved payment methods for the customer
+            const savedPaymentMethods = await stripe.paymentMethods.list({
+                customer: business.stripeCustomerId,
+                type: 'card',
+            });
+
+            // Check if this card is already saved
+            isDuplicate = savedPaymentMethods.data.some(savedMethod =>
+                savedMethod.card.fingerprint === paymentMethod.card.fingerprint
+            );
+
+            if (!isDuplicate) {
+                // Attach the payment method to the customer
+                await stripe.paymentMethods.attach(paymentMethodId, {
+                    customer: business.stripeCustomerId,
+                });
+            } else {
+                // If it's a duplicate, find the existing payment method ID
+                const existingMethod = savedPaymentMethods.data.find(
+                    savedMethod => savedMethod.card.fingerprint === paymentMethod.card.fingerprint
+                );
+                if (existingMethod) {
+                    finalPaymentMethodId = existingMethod.id;
+                }
+            }
+            // Set as default payment method
+            await stripe.customers.update(business.stripeCustomerId, {
+                invoice_settings: {
+                    default_payment_method: finalPaymentMethodId,
+                },
+            });
+        } else {
+            customer = await stripe.customers.create({
+                email: business.email,
+                name: business.name,
+                payment_method: paymentMethodId,
+                invoice_settings: {
+                    default_payment_method: paymentMethodId,
+                },
+            });
+            business.stripeCustomerId = customer.id;
+            await business.save();
         }
+
+        // Create subscription
+        const subscription = await stripe.subscriptions.create({
+            customer: customer.id,
+            items: [{ price: originalSubscription.priceId }],
+            payment_behavior: 'error_if_incomplete',
+            payment_settings: {
+                save_default_payment_method: 'on_subscription',
+                payment_method_types: ['card'],
+            },
+            expand: ['latest_invoice.payment_intent'],
+            collection_method: 'charge_automatically',
+            default_payment_method: finalPaymentMethodId
+        });
+
+        // Get the latest invoice
+        const latestInvoice = await stripe.invoices.retrieve(subscription.latest_invoice.id, {
+            expand: ['payment_intent']
+        });
+
+        // Handle payment intent
+        let clientSecret;
+        if (!latestInvoice.payment_intent || latestInvoice.payment_intent.status === 'succeeded') {
+            // Create a new payment intent if none exists or if the existing one is already succeeded
+            const paymentIntent = await stripe.paymentIntents.create({
+                amount: price.unit_amount,
+                currency: price.currency,
+                customer: customer.id,
+                payment_method: finalPaymentMethodId,
+                off_session: true,
+                confirm: true,
+                metadata: {
+                    subscriptionId: subscription.id,
+                    userId: userId.toString()
+                }
+            });
+            clientSecret = paymentIntent.client_secret;
+        } else {
+            // Use the existing payment intent's client secret
+            clientSecret = latestInvoice.payment_intent.client_secret;
+        }
+
+        // Save subscription details to database
+        const subscriptionData = {
+            userId,
+            stripeSubscriptionId: subscription.id,
+            stripeCustomerId: business.stripeCustomerId,
+            paymentMethodId: finalPaymentMethodId,
+            status: subscription.status,
+            priceId: originalSubscription.priceId,
+            amount: price.unit_amount / 100,
+            currentPeriodStart: new Date(subscription.current_period_start * 1000),
+            currentPeriodEnd: new Date(subscription.current_period_end * 1000),
+        };
+
+        await Subscription.create(subscriptionData);
+
+        // Send payment confirmation email
+        const today = new Date().toLocaleDateString('en-US', {
+            year: 'numeric',
+            month: 'long',
+            day: 'numeric'
+        });
+
+        await sendingMail({
+            email: business.email,
+            sub: "Your WellnexAI Subscription Has Been Renewed",
+            text: `Hi ${business.name},\n\nThis is a confirmation that your payment of ${price.unit_amount / 100} ${price.currency.toUpperCase()} has been processed successfully.\n\nPlan: Monthly Subscription\nAmount: ${price.unit_amount / 100} ${price.currency.toUpperCase()}\nDate: ${today}\n\nYou can view or manage your billing at any time via your Dashboard.\n\nQuestions? Email support@wellnexai.com\n\nThanks for being part of the WellnexAI community!`,
+            html: `
+                <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+                    <h2 style="color: #333;">WellnexAI Payment Receipt – ${today}</h2>
+                    <p>Hi ${business.name},</p>
+                    <p>This is a confirmation that your payment of <strong>${price.unit_amount / 100} ${price.currency.toUpperCase()}</strong> has been processed successfully.</p>
+                    <div style="background-color: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0;">
+                        <p style="margin: 5px 0;"><strong>Plan:</strong> Monthly Subscription</p>
+                        <p style="margin: 5px 0;"><strong>Amount:</strong> ${price.unit_amount / 100} ${price.currency.toUpperCase()}</p>
+                        <p style="margin: 5px 0;"><strong>Date:</strong> ${today}</p>
+                    </div>
+                    <p>You can view or manage your billing at any time via your <a href="https://wellnexai.com/dashboard" style="color: #007bff; text-decoration: none;">Dashboard</a>.</p>
+                    <p>Questions? Email <a href="mailto:support@wellnexai.com" style="color: #007bff; text-decoration: none;">support@wellnexai.com</a></p>
+                    <p>Thanks for being part of the WellnexAI community!</p>
+                </div>
+            `
+        });
+
+        return {
+            subscriptionId: subscription.id,
+            clientSecret: clientSecret,
+            isNewCard: !isDuplicate
+        };
     } catch (error) {
         console.error('Error in renewSubscriptionAfterSpecialOffer:', error);
-        throw error;
+        throw new Error(`Failed to renew subscription: ${error.message}`);
     }
 };
 
@@ -1067,7 +1215,7 @@ export const updateCardDetails = async (userId, cardId, cardDetails) => {
 export const getAllActiveSubscriptions = async (filter = {}, sort = {}, limit = 10, offset = 0) => {
     try {
         const query = {
-            status: { $in: ['active', 'trialing'] },
+            status: { $in: ['active', 'trialing', 'canceled'] },
             currentPeriodEnd: { $gt: new Date() },
             ...filter
         };
@@ -1097,12 +1245,20 @@ export const getSubscriptionCountsHandler = async () => {
         // Get active subscriptions (including trialing)
         const activeCount = await Subscription.countDocuments({
             status: { $in: ['active', 'trialing'] },
-            currentPeriodEnd: { $gt: now }
+            currentPeriodEnd: { $gt: now },
+            currentPeriodStart: { $lte: now },
+            cancelAtPeriodEnd: false,
         });
 
         // Get paused subscriptions
         const pausedCount = await Subscription.countDocuments({
             status: 'paused'
+        });
+
+        const cancelAtPeriodEndCount = await Subscription.countDocuments({
+            status: { $in: ['active', 'trialing'] },
+            currentPeriodEnd: { $gt: now },
+            cancelAtPeriodEnd: true,
         });
 
         // Get cancelled subscriptions
@@ -1116,6 +1272,7 @@ export const getSubscriptionCountsHandler = async () => {
         return {
             active: activeCount,
             paused: pausedCount,
+            cancelAtPeriodEndCount, cancelAtPeriodEndCount,
             cancelled: cancelledCount,
             total: totalCount
         };
@@ -1201,6 +1358,7 @@ export const getPaymentListHandler = async (filter = {}, limit = 10, offset = 0)
 
 export const updateSubscriptionStatusHandler = async (subscriptionId, status) => {
     try {
+        console.log(subscriptionId, "subscriptionIda", status);
         // Find the subscription in our database
         const subscription = await Subscription.findOne({
             stripeSubscriptionId: subscriptionId
@@ -1210,11 +1368,53 @@ export const updateSubscriptionStatusHandler = async (subscriptionId, status) =>
             throw new Error('Subscription not found');
         }
 
-        // Validate the status
-        const validStatuses = ['active', 'canceled', 'paused', 'trialing'];
+        // Validate the status against our schema's allowed values
+        const validStatuses = [
+            'active',
+            'canceled',
+            'incomplete',
+            'incomplete_expired',
+            'past_due',
+            'trialing',
+            'unpaid',
+            'paused',
+            'canceledImmediately'
+        ];
+
         if (!validStatuses.includes(status)) {
-            throw new Error('Invalid subscription status');
+            throw new Error(`Invalid subscription status. Must be one of: ${validStatuses.join(', ')}`);
         }
+
+        // Check if this is a special offer subscription
+        const isSpecialOffer = subscriptionId.startsWith('special_');
+
+        if (isSpecialOffer) {
+            // For special offer subscriptions, only update the database
+            const updatedSubscription = await Subscription.findOneAndUpdate(
+                { stripeSubscriptionId: subscriptionId },
+                {
+                    status: status === 'canceledImmediately' ? 'canceled' : status,
+                    // For canceled status, set currentPeriodEnd to now
+                    currentPeriodEnd: status === 'canceled' ? new Date() : subscription.currentPeriodEnd,
+                    cancelAtPeriodEnd: status === 'canceled'
+                },
+                { new: true, runValidators: true }
+            );
+
+            if (!updatedSubscription) {
+                throw new Error('Failed to update special offer subscription in database');
+            }
+
+            return {
+                id: updatedSubscription._id,
+                stripeSubscriptionId: updatedSubscription.stripeSubscriptionId,
+                status: updatedSubscription.status,
+                currentPeriodStart: updatedSubscription.currentPeriodStart,
+                currentPeriodEnd: updatedSubscription.currentPeriodEnd,
+                cancelAtPeriodEnd: updatedSubscription.cancelAtPeriodEnd
+            };
+        }
+        console.log(subscription, "subscription", status);
 
         let stripeSubscription;
 
@@ -1224,8 +1424,16 @@ export const updateSubscriptionStatusHandler = async (subscriptionId, status) =>
                 // Resume a paused subscription
                 if (subscription.status === 'paused') {
                     stripeSubscription = await stripe.subscriptions.update(subscriptionId, {
+                        cancel_at_period_end: false,
                         pause_collection: null
                     });
+                } else if (subscription.status === 'active') {
+                    // Step 1: Unset cancel at period end if already set
+                    if (subscription.cancelAtPeriodEnd) {
+                        stripeSubscription = await stripe.subscriptions.update(subscriptionId, {
+                            cancel_at_period_end: false,
+                        });
+                    }
                 } else {
                     throw new Error('Can only activate paused subscriptions');
                 }
@@ -1234,47 +1442,64 @@ export const updateSubscriptionStatusHandler = async (subscriptionId, status) =>
             case 'paused':
                 // Pause an active subscription
                 if (subscription.status === 'active') {
+                    // Step 1: Unset cancel at period end if already set
+                    if (subscription.cancelAtPeriodEnd) {
+                        await stripe.subscriptions.update(subscriptionId, {
+                            cancel_at_period_end: false,
+                        });
+                    }
+
+                    // Step 2: Pause the subscription
                     stripeSubscription = await stripe.subscriptions.update(subscriptionId, {
                         pause_collection: {
-                            behavior: 'mark_uncollectible'
-                        }
+                            behavior: 'mark_uncollectible',
+                        },
                     });
+
                 } else {
                     throw new Error('Can only pause active subscriptions');
                 }
                 break;
 
             case 'canceled':
-                // Cancel the subscription
+                // Cancel the subscription at period end
                 stripeSubscription = await stripe.subscriptions.update(subscriptionId, {
-                    cancel_at_period_end: true
+                    cancel_at_period_end: true,
+                    pause_collection: null
                 });
                 break;
 
-            case 'trialing':
-                // Start a trial period
-                if (subscription.status === 'canceled') {
-                    stripeSubscription = await stripe.subscriptions.update(subscriptionId, {
-                        trial_end: Math.floor(Date.now() / 1000) + (14 * 24 * 60 * 60), // 14 days trial
-                        cancel_at_period_end: false
-                    });
-                } else {
-                    throw new Error('Can only start trial for canceled subscriptions');
-                }
+            case 'canceledImmediately':
+                // Cancel the subscription immediately
+                stripeSubscription = await stripe.subscriptions.cancel(subscriptionId);
                 break;
+
+            default:
+                throw new Error(`Unsupported status transition from ${subscription.status} to ${status}`);
         }
 
-        // Update subscription in our database
+        // Determine the actual status based on pause_collection and other factors
+        let actualStatus = stripeSubscription.status;
+
+        if (stripeSubscription.pause_collection && stripeSubscription.pause_collection.behavior === 'mark_uncollectible') {
+            actualStatus = 'paused';
+        }
+
+        // Update subscription in our database with all relevant fields
         const updatedSubscription = await Subscription.findOneAndUpdate(
             { stripeSubscriptionId: subscriptionId },
             {
-                status: stripeSubscription.status,
+                status: actualStatus,
                 currentPeriodStart: new Date(stripeSubscription.current_period_start * 1000),
-                currentPeriodEnd: new Date(stripeSubscription.current_period_end * 1000),
+                currentPeriodEnd: actualStatus === 'canceled' ? new Date(stripeSubscription.canceled_at * 1000) : new Date(stripeSubscription.current_period_end * 1000),
                 cancelAtPeriodEnd: stripeSubscription.cancel_at_period_end
             },
-            { new: true }
+            { new: true, runValidators: true }
         );
+
+        if (!updatedSubscription) {
+            throw new Error('Failed to update subscription in database');
+        }
 
         return {
             id: updatedSubscription._id,
@@ -1285,6 +1510,13 @@ export const updateSubscriptionStatusHandler = async (subscriptionId, status) =>
             cancelAtPeriodEnd: updatedSubscription.cancelAtPeriodEnd
         };
     } catch (error) {
+        // Log the error for debugging
+        console.error('Subscription status update error:', error);
+
+        // Throw a more specific error message
+        if (error.type === 'StripeInvalidRequestError') {
+            throw new Error(`Stripe API error: ${error.message}`);
+        }
         throw new Error(`Error updating subscription status: ${error.message}`);
     }
 };
@@ -1325,70 +1557,82 @@ export const updatePreferredCurrency = async (userId, currencyId) => {
 export const getActiveSubscriptionDetails = async (userId) => {
     try {
         // Find active subscription
-        const subscription = await Subscription.findOne({
+        const subscription = await Subscription.find({
             userId,
-            status: { $in: ['active', 'trialing'] },
-            currentPeriodEnd: { $gt: new Date() }
-        });
-
-        if (!subscription) {
+            $or: [
+                { specialOfferExpiry: { $gt: new Date() } },
+                {
+                    $and: [
+                        { currentPeriodStart: { $lt: new Date() } },
+                        { currentPeriodEnd: { $gt: new Date() } }
+                    ]
+                }
+            ]
+        }).sort({ createdAt: -1 });
+        console.log(subscription, "subscription");
+        if (!subscription || subscription.length === 0) {
             throw new Error('No active subscription found');
         }
 
-        // Get business details
-        // const business = await Business.findById(userId).populate('preferredCurrency');
-        // if (!business) {
-        //     throw new Error('Business not found');
-        // }
-
-        // Get price details from Stripe
-        // const price = await stripe.prices.retrieve(subscription.priceId);
-        // if (!price) {
-        //     throw new Error('Price not found');
-        // }
-
-        // // Get subscription details from Stripe
-        // const stripeSubscription = await stripe.subscriptions.retrieve(subscription.stripeSubscriptionId);
-
-        // // Format the response
-        // const subscriptionDetails = {
-        //     id: subscription._id,
-        //     stripeSubscriptionId: subscription.stripeSubscriptionId,
-        //     status: subscription.status,
-        //     plan: {
-        //         name: price.product.name,
-        //         description: price.product.description,
-        //         amount: price.unit_amount / 100,
-        //         currency: price.currency,
-        //         interval: price.recurring.interval
-        //     },
-        //     currentPeriod: {
-        //         start: subscription.currentPeriodStart,
-        //         end: subscription.currentPeriodEnd
-        //     },
-        //     cancelAtPeriodEnd: subscription.cancelAtPeriodEnd,
-        //     paymentMethod: {
-        //         id: subscription.paymentMethodId,
-        //         // Get payment method details from Stripe
-        //         details: await stripe.paymentMethods.retrieve(subscription.paymentMethodId)
-        //     },
-        //     business: {
-        //         id: business._id,
-        //         name: business.name,
-        //         email: business.email,
-        //         preferredCurrency: {
-        //             code: business.preferredCurrency.code,
-        //             name: business.preferredCurrency.name,
-        //             symbol: business.preferredCurrency.symbol
-        //         }
-        //     },
-        //     nextBillingDate: new Date(stripeSubscription.current_period_end * 1000),
-        //     createdAt: subscription.createdAt,
-        //     updatedAt: subscription.updatedAt
-        // };
-
-        return subscription;
+        return subscription[0];
     } catch (error) {
         throw new Error(`Error getting subscription details: ${error.message}`);
     }
-}; 
+};
+
+export const getLatestSubscriptionStatusCounts = async () => {
+    try {
+        // Get all unique users
+        const users = await Subscription.distinct('userId');
+
+        // Initialize counts
+        const counts = {
+            active: 0,
+            paused: 0,
+            cancelled: 0,
+            cancelAtPeriodEndCount: 0,
+            total: users.length
+        };
+
+        // For each user, get their latest subscription
+        for (const userId of users) {
+            // First try to find an active subscription for today
+            let latestSubscription = await Subscription.findOne({
+                userId,
+                status: { $in: ['active', 'trialing', 'canceled', 'paused'] },
+                currentPeriodStart: { $lt: new Date() },
+                currentPeriodEnd: { $gt: new Date() }
+            }).sort({ createdAt: 1 });
+
+            // If no active subscription found, look for a valid special offer
+            if (!latestSubscription) {
+                latestSubscription = await Subscription.findOne({
+                    userId,
+                    status: { $in: ['active', 'trialing', 'canceled', 'paused'] },
+                    specialOfferExpiry: { $gt: new Date() }
+                }).sort({ createdAt: 1 });
+            }
+            if (latestSubscription) {
+                switch (latestSubscription.status) {
+                    case 'active':
+                        if (latestSubscription.cancelAtPeriodEnd) {
+                            counts.cancelAtPeriodEndCount++;
+                        } else {
+                            counts.active++;
+                        }
+                        break;
+                    case 'paused':
+                        counts.paused++;
+                        break;
+                    case 'canceled':
+                        counts.cancelled++;
+                        break;
+                }
+            }
+        }
+        return counts;
+    } catch (error) {
+        console.error('Error getting subscription status counts:', error);
+        throw new Error(`Failed to get subscription status counts: ${error.message}`);
+    }
+};

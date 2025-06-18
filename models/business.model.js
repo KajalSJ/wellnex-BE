@@ -57,6 +57,10 @@ const { Schema } = mongoose,
                 type: String,
                 default: null,
             },
+            resetPasswordExpires: {
+                type: String,
+                default: null,
+            },
             loginTime: {
                 type: Date,
                 default: null,
@@ -66,6 +70,14 @@ const { Schema } = mongoose,
                 default: null,
             },
             instagram_url: {
+                type: String,
+                default: null,
+            },
+            mobile: {
+                type: String,
+                default: null,
+            },
+            nextStep: {
                 type: String,
                 default: null,
             },
@@ -126,15 +138,19 @@ const { Schema } = mongoose,
     );
 
 // Add middleware to exclude deleted businesses from queries
-businessSchema.pre('find', function() {
+businessSchema.pre('find', function () {
     this.where({ isDeleted: false });
 });
 
-businessSchema.pre('findOne', function() {
+businessSchema.pre('countDocuments', function () {
     this.where({ isDeleted: false });
 });
 
-businessSchema.pre('findById', function() {
+businessSchema.pre('findOne', function () {
+    this.where({ isDeleted: false });
+});
+
+businessSchema.pre('findById', function () {
     this.where({ isDeleted: false });
 });
 

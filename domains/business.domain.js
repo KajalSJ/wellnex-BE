@@ -16,8 +16,9 @@ import fs from 'fs';
 import config from "../configurations/app.config.js";
 import businessModel from "../models/business.model.js";
 import adminService from "../services/admin.service.js";
-import { getActiveSubscriptionDetails } from "../services/subscription.service.js";
+import { cancelSubscription, cancelSubscriptionImmediately, getActiveSubscriptionDetails, pauseSubscription, resumeSubscription, updateSubscriptionStatusHandler } from "../services/subscription.service.js";
 import Subscription from "../models/subscription.model.js";
+import Stripe from "stripe";
 
 const { send200, send401, send400 } = responseHelper,
     { createBusiness, updateBusiness, retriveBusiness } = businessService,
@@ -31,6 +32,7 @@ const businessSignup = [
     signupValidator.name,
     signupValidator.email,
     signupValidator.password,
+    signupValidator.mobile,
     async (req, res) => {
         const errors = validationThrowsError(req);
         if (errors.length)
@@ -41,7 +43,7 @@ const businessSignup = [
             });
         else {
             const {
-                body: { email, password, name, contact_name, website_url, instagram_url },
+                body: { email, password, name, contact_name, website_url, instagram_url, mobile },
             } = req;
             try {
                 let existingAdmin = await retriveAdmin({
@@ -70,6 +72,7 @@ const businessSignup = [
                         password: await bcrypt.hash(password, await bcrypt.genSalt(10)),
                         email: email.toLowerCase(),
                         contact_name, website_url, instagram_url,
+                        mobile,
                     });
                     let update_Business = await updateBusiness(
                         {
@@ -85,11 +88,12 @@ const businessSignup = [
                                 updatedAt: create_Business.updatedAt,
                             }),
                             loginTime: new Date(moment().utc()),
+                            nextStep: 'step-1',
                         }
                     );
 
                     // Send welcome email
-                    const loginLink = `${config.APP_URL}/#/signin`;
+                    const loginLink = `${config.APP_URL}/signin`;
                     await sendingMail({
                         email: create_Business.email,
                         sub: "Welcome to WellnexAI! Your Dashboard Awaits",
@@ -192,18 +196,37 @@ const businessSignup = [
                                 message: "Invalid password",
                                 data: null,
                             });
-                        else if (!existingBusiness.isEmailVerified)
-                            return send400(res, {
-                                status: false,
-                                message: "Email not verified",
-                                data: null,
-                            });
+                        // else if (existingBusiness.nextStep !== '')
+                        //     return send400(res, {
+                        //         status: false,
+                        //         message: "Please complete the onboarding process",
+                        //         data: { nextStep: existingBusiness.nextStep },
+                        //     });
+                        // else if (!existingBusiness.isEmailVerified)
+                        //     return send400(res, {
+                        //         status: false,
+                        //         message: "Email not verified",
+                        //         data: null,
+                        //     });
                         else {
                             // check if this business have valid subscription
-                            const subscription = await Subscription.findOne({
+                            // First try to find an active subscription for today
+                            let subscription = await Subscription.findOne({
                                 userId: existingBusiness._id,
+                                status: { $in: ['active', 'trialing', 'canceled', 'paused'] },
+                                currentPeriodStart: { $lt: new Date() },
                                 currentPeriodEnd: { $gt: new Date() }
-                            });
+                            }).sort({ createdAt: 1 });
+
+                            // If no active subscription found, look for a valid special offer
+                            if (!subscription) {
+                                subscription = await Subscription.findOne({
+                                    userId: existingBusiness._id,
+                                    status: { $in: ['active', 'trialing', 'canceled', 'paused'] },
+                                    specialOfferExpiry: { $gt: new Date() }
+                                }).sort({ createdAt: 1 });
+                            }
+
                             let update_Business = await updateBusiness(
                                 {
                                     _id: existingBusiness._id,
@@ -265,25 +288,49 @@ const businessSignup = [
                             data: null,
                         });
                     } else {
+                        // Generate reset token
+                        const resetToken = generateToken({
+                            _id: existingBusiness._id,
+                            email: existingBusiness.email.toLowerCase(),
+                            type: 'password_reset'
+                        });
+
+                        // Create reset password link
+                        const resetLink = `${config.APP_URL}/reset-password?token=${resetToken}`;
+
+                        // Send reset password email
+                        await sendingMail({
+                            email: existingBusiness.email,
+                            sub: "Reset Your WellnexAI Password",
+                            text: `Hi ${existingBusiness.name},\n\nWe received a request to reset your password. Click the link below to reset your password:\n\n${resetLink}\n\nThis link will expire in 1 hour.\n\nIf you didn't request this, please ignore this email.\n\nBest regards,\nThe WellnexAI Team`,
+                            html: `
+                                <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+                                    <h2 style="color: #333;">Reset Your WellnexAI Password</h2>
+                                    <p>Hi ${existingBusiness.name},</p>
+                                    <p>We received a request to reset your password. Click the link below to reset your password:</p>
+                                    <p><a href="${resetLink}" style="display: inline-block; padding: 10px 20px; background-color: #007bff; color: white; text-decoration: none; border-radius: 5px;">Reset Password</a></p>
+                                    <p>This link will expire in 1 hour.</p>
+                                    <p>If you didn't request this, please ignore this email.</p>
+                                    <p>Best regards,<br>The WellnexAI Team</p>
+                                </div>
+                            `
+                        });
+
+                        // Store reset token in database
                         let update_Business = await updateBusiness(
                             {
                                 _id: existingBusiness._id,
                             },
                             {
-                                resetPasswordToken: generateToken({
-                                    _id: existingBusiness._id,
-                                    firstName: existingBusiness.name,
-                                    email: existingBusiness.email.toLowerCase(),
-                                    roles: existingBusiness.roles[0],
-                                    createdAt: existingBusiness.createdAt,
-                                    updatedAt: existingBusiness.updatedAt,
-                                }),
+                                resetPasswordToken: resetToken,
+                                resetPasswordExpires: new Date(Date.now() + 3600000) // Token expires in 1 hour
                             }
-                        )
+                        );
+
                         send200(res, {
                             status: true,
-                            message: "Reset Password is token generated.",
-                            data: update_Business,
+                            message: "Password reset instructions have been sent to your email",
+                            data: null,
                         });
                     }
                 } catch (err) {
@@ -295,7 +342,6 @@ const businessSignup = [
                 }
             }
         }
-
     ],
     resetPassword = [
         async (req, res) => {
@@ -308,43 +354,73 @@ const businessSignup = [
                 });
             else {
                 const {
-                    body: { email, token, password },
+                    body: { token, password },
                 } = req;
                 try {
+                    // Verify token
+                    const decoded = await verifyToken(token);
+
+                    if (!decoded || decoded.sub.type !== 'password_reset') {
+                        return send400(res, {
+                            status: false,
+                            message: "Invalid or expired reset token",
+                            data: null,
+                        });
+                    }
+                    let existingBusiness1 = await retriveBusiness({
+                        _id: decoded.sub._id,
+                        resetPasswordToken: token,
+                    });
+                    let existingBusiness2 = await retriveBusiness({
+                        _id: decoded.sub._id,
+                    });
 
                     let existingBusiness = await retriveBusiness({
-                        email: email.toLowerCase(),
+                        _id: decoded.sub._id,
+                        resetPasswordExpires: { $gt: new Date(Date.now()) }
                     });
+
                     if (!existingBusiness) {
                         return send400(res, {
                             status: false,
-                            message: "Email not registered",
+                            message: "Invalid or expired reset token",
                             data: null,
                         });
-                    } else {
-                        if (existingBusiness.resetPasswordToken != token) {
-                            return send400(res, {
-                                status: false,
-                                message: "Invalid Token",
-                                data: null,
-                            });
-                        } else {
-                            let update_Business = await updateBusiness(
-                                {
-                                    _id: existingBusiness._id,
-                                },
-                                {
-                                    resetPasswordToken: null,
-                                    password: await bcrypt.hash(password, 10),
-                                }
-                            )
-                            send200(res, {
-                                status: true,
-                                message: "Password has been reset successfully",
-                                data: update_Business,
-                            });
-                        }
                     }
+
+                    // Update password and clear reset token
+                    let update_Business = await updateBusiness(
+                        {
+                            _id: existingBusiness._id,
+                        },
+                        {
+                            resetPasswordToken: null,
+                            resetPasswordExpires: null,
+                            password: await bcrypt.hash(password, await bcrypt.genSalt(10)),
+                        }
+                    );
+
+                    // Send confirmation email
+                    await sendingMail({
+                        email: existingBusiness.email,
+                        sub: "Your WellnexAI Password Has Been Reset",
+                        text: `Hi ${existingBusiness.name},\n\nYour password has been successfully reset.\n\nIf you didn't make this change, please contact our support team immediately.\n\nBest regards,\nThe WellnexAI Team`,
+                        html: `
+                            <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+                                <h2 style="color: #333;">Your WellnexAI Password Has Been Reset</h2>
+                                <p>Hi ${existingBusiness.name},</p>
+                                <p>Your password has been successfully reset.</p>
+                                <p>If you didn't make this change, please contact our support team immediately.</p>
+                                <p>Best regards,<br>The WellnexAI Team</p>
+                            </div>
+                        `
+                    });
+
+                    send200(res, {
+                        status: true,
+                        message: "Password has been reset successfully",
+                        data: null,
+                    });
                 } catch (err) {
                     send401(res, {
                         status: false,
@@ -381,13 +457,32 @@ const businessSignup = [
                         _id: businessId,
                     });
                     if (!existingBusiness) {
-                        return send400(res, {
-                            status: false,
-                            message: "Email not registered",
-                            data: null,
+                        let existingAdmin = await retriveAdmin({
+                            _id: businessId,
                         });
+                        if (!existingAdmin) {
+                            return send400(res, {
+                                status: false,
+                                message: "Email not registered",
+                                data: null,
+                            });
+                        } else {
+                            await updateAdmin(
+                                {
+                                    _id: existingAdmin._id,
+                                },
+                                {
+                                    loginToken: null,
+                                }
+                            );
+                            send200(res, {
+                                status: true,
+                                message: "Logout successfully",
+                                data: null,
+                            });
+                        }
                     } else {
-                        let update_Business = await updateBusiness(
+                        await updateBusiness(
                             {
                                 _id: existingBusiness._id,
                             },
@@ -398,7 +493,7 @@ const businessSignup = [
                         return send200(res, {
                             status: true,
                             message: "Logout successfully",
-                            data: update_Business,
+                            data: null,
                         });
                     }
                 } catch (err) {
@@ -449,6 +544,7 @@ const businessSignup = [
                             },
                             {
                                 logo: req?.file?.filename,
+                                nextStep: 'step-2',
                             }
                         )
                         send200(res, {
@@ -498,6 +594,7 @@ const businessSignup = [
                             },
                             {
                                 themeColor: req.body.themeColor,
+                                nextStep: 'step-3',
                             }
                         )
                         send200(res, {
@@ -505,6 +602,7 @@ const businessSignup = [
                             message: "Theme color has been updated successfully",
                             data: {
                                 themeColor: req.body.themeColor,
+                                nextStep: 'step-3',
                             },
                         });
                     }
@@ -571,7 +669,7 @@ const businessSignup = [
                         if (newKeywords.length === 0) {
                             return send400(res, {
                                 status: false,
-                                message: "All keywords already exist",
+                                message: "Keyword already exist",
                                 data: existingBusiness.keywords,
                             });
                         }
@@ -580,13 +678,14 @@ const businessSignup = [
                                 _id: existingBusiness._id,
                             },
                             {
-                                $addToSet: { keywords: { $each: newKeywords } }
+                                $addToSet: { keywords: { $each: newKeywords } },
+                                nextStep: 'step-4',
                             }
                         )
                         send200(res, {
                             status: true,
                             message: "Business keywords updated successfully",
-                            data: { keywords: update_Business.keywords },
+                            data: { keywords: update_Business.keywords, nextStep: 'step-4' },
                         });
                     }
                 } catch (err) {
@@ -699,6 +798,7 @@ const businessSignup = [
                             },
                             {
                                 isEmailVerified: true,
+                                nextStep: '',
                             }
                         )
 
@@ -775,6 +875,7 @@ const businessSignup = [
                     let existingBusiness = await retriveBusiness({
                         _id: businessId,
                     });
+                    let responseMessage = "";
                     if (!existingBusiness) {
                         return send400(res, {
                             status: false,
@@ -798,16 +899,49 @@ const businessSignup = [
                                 }
                             )
                         }
+                        // First try to find an active subscription for today
+                        let subscription = await Subscription.findOne({
+                            userId: existingBusiness._id,
+                            status: { $in: ['active', 'trialing', 'canceled', 'paused'] },
+                            currentPeriodStart: { $lt: new Date() },
+                            currentPeriodEnd: { $gt: new Date() }
+                        }).sort({ createdAt: 1 });
+
+                        // If no active subscription found, look for a valid special offer
+                        if (!subscription) {
+                            subscription = await Subscription.findOne({
+                                userId: existingBusiness._id,
+                                status: { $in: ['active', 'trialing', 'canceled', 'paused'] },
+                                specialOfferExpiry: { $gt: new Date() }
+                            }).sort({ createdAt: 1 });
+                        }
+
+                        if (subscription) {
+                            console.log(subscription.status, "subscription.status", req.body.subscriptionStatus);
+                            // check if subscription in canceled or it will be canceled at period end
+                            if (subscription.status === 'canceled') {
+                                responseMessage = "Business details updated successfully but subscription status cannot be updated for canceled subscriptions";
+                            } else if ((req.body.subscriptionStatus && req.body.subscriptionStatus !== subscription.status)
+                                || (subscription.status === 'active' && subscription.cancelAtPeriodEnd && req.body.subscriptionStatus === 'active')) {
+                                await updateSubscriptionStatusHandler(subscription.stripeSubscriptionId, req.body.subscriptionStatus);
+                                responseMessage = "Business details and subscription status updated successfully";
+                            } else {
+                                responseMessage = "Business details updated successfully";
+                            }
+                        } else {
+                            responseMessage = "Business details updated successfully but no active subscription found";
+                        }
                         const update_Business = await updateBusiness(
                             {
                                 _id: existingBusiness._id,
                             },
                             {
                                 ...req.body,
-                            })
+                            }
+                        );
                         send200(res, {
                             status: true,
-                            message: "Business details updated successfully",
+                            message: responseMessage,
                             data: update_Business,
                         });
                     }
@@ -840,6 +974,7 @@ const businessSignup = [
                 } else {
                     // GET SUBSCRIPTION DETAIL
                     const subscriptionDetail = await getActiveSubscriptionDetails(existingBusiness._id);
+
                     send200(res, {
                         status: true,
                         message: "Business details fetched successfully",
@@ -1003,7 +1138,7 @@ const businessSignup = [
                         if (newServices.length === 0) {
                             return send400(res, {
                                 status: false,
-                                message: "All services already exist",
+                                message: "Service already exist",
                                 data: existingBusiness.services,
                             });
                         }
@@ -1013,13 +1148,14 @@ const businessSignup = [
                                 _id: existingBusiness._id,
                             },
                             {
-                                $addToSet: { services: { $each: newServices } }
+                                $addToSet: { services: { $each: newServices } },
+                                nextStep: 'step-5',
                             }
                         )
                         send200(res, {
                             status: true,
                             message: "Business services updated successfully",
-                            data: { services: update_Business.services },
+                            data: { services: update_Business.services, nextStep: 'step-5' },
                         });
                     }
                 } catch (err) {
@@ -1308,7 +1444,7 @@ const businessSignup = [
                         if (newQuestions.length === 0) {
                             return send400(res, {
                                 status: false,
-                                message: "All questions already exist",
+                                message: "Question already exist",
                                 data: existingBusiness.questions,
                             });
                         }
@@ -1318,13 +1454,13 @@ const businessSignup = [
                                 _id: existingBusiness._id,
                             },
                             {
-                                $addToSet: { questions: { $each: newQuestions } }
+                                $addToSet: { questions: { $each: newQuestions } }, nextStep: 'step-6'
                             }
                         )
                         send200(res, {
                             status: true,
                             message: "Business questions updated successfully",
-                            data: { questions: update_Business.questions },
+                            data: { questions: update_Business.questions, nextStep: 'step-6' },
                         });
                     }
                 } catch (err) {
@@ -1512,7 +1648,7 @@ const businessSignup = [
             }
         }
     ],
-
+    // not in use
     setupChatbot = [
         // jwtAuthGuard,
         async (req, res) => {

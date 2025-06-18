@@ -75,27 +75,13 @@ const createBusiness = async (data) => {
       });
 
       for (const subscription of activeSubscriptions) {
-        if (!subscription.stripeSubscriptionId.includes('special_'))
+        if (!subscription.stripeSubscriptionId.includes('special_')) {
           // Cancel in Stripe
-          await stripe.subscriptions.update(
-            subscription.stripeSubscriptionId,
-            { cancel_at_period_end: true }
-          );
+          let cancelResult = await stripe.subscriptions.cancel(subscription.stripeSubscriptionId);
+        }
       }
 
-      const subscriptionResult = await Subscription.updateMany(
-        {
-          userId: businessId,
-          status: { $in: ['active', 'trialing'] }
-        },
-        {
-          status: 'canceled',
-          cancelAtPeriodEnd: true,
-          canceledAt: new Date(),
-          cancellationReason: `Business deleted: ${reason}`,
-          lastModifiedBy: adminId
-        }
-      );
+      const subscriptionResult = await Subscription.deleteMany({ userId: businessId });
 
       // 5. Create audit log
       await createAuditLog({

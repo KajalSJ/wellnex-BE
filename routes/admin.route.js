@@ -6,6 +6,8 @@ import responseHelper from "../helpers/response.helper.js";
 import { isAdmin } from "../middlewares/auth.middleware.js";
 import Lead from "../models/lead.model.js";
 import adminService from "../services/admin.service.js";
+import { cancelSubscriptionImmediately, pauseSubscription, resumeSubscription } from "../services/subscription.service.js";
+import businessModel from "../models/business.model.js";
 
 const adminRouter = Router(),
     {
@@ -102,10 +104,12 @@ adminRouter.get('/lead-counts', isAdmin, async (req, res) => {
 
         // Get total leads count
         const totalLeads = await Lead.countDocuments({});
+        const totalBusiness = await businessModel.countDocuments({})
         res.json({
             status: true,
             data: {
                 totalLeads,
+                totalBusiness,
             }
         });
     } catch (err) {
@@ -140,5 +144,31 @@ adminRouter.get('/list', isAdmin, async (req, res) => {
         });
     }
 });
-
+adminRouter.post('/subscription/cancel', isAdmin, async (req, res) => {
+    try {
+        const { userId } = req.body;
+        const result = await cancelSubscriptionImmediately(userId);
+        res.json(result);
+    } catch (error) {
+        res.status(400).json({ error: error.message });
+    }
+});
+adminRouter.post('/subscription/pause', isAdmin, async (req, res) => {
+    try {
+        const { userId } = req.body;
+        const result = await pauseSubscription(userId);
+        res.json(result);
+    } catch (error) {
+        res.status(400).json({ error: error.message });
+    }
+});
+adminRouter.post('/subscription/resume', isAdmin, async (req, res) => {
+    try {
+        const { userId } = req.body;
+        const result = await resumeSubscription(userId);
+        res.json(result);
+    } catch (error) {
+        res.status(400).json({ error: error.message });
+    }
+});
 export default adminRouter;

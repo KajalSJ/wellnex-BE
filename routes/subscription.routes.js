@@ -1,6 +1,9 @@
 import express from 'express';
 import { createSubscription, cancelSubscription, getActiveSubscription, getSavedCards, getSubscriptionPlans, removeSavedCard, applySpecialOffer, checkSpecialOfferPrice, getProductPrices, renewSubscriptionAfterSpecialOffer, setDefaultCard, updateCardDetails, updatePreferredCurrency } from '../services/subscription.service.js';
 import jwtMiddleware from '../middlewares/jwt.middleware.js';
+import Subscription from '../models/subscription.model.js';
+import businessService from '../services/business.service.js';
+const { retriveBusiness } = businessService;
 
 const router = express.Router();
 const { verifyToken: jwtAuthGuard } = jwtMiddleware;
@@ -37,8 +40,35 @@ router.post('/cancel', jwtAuthGuard, async (req, res) => {
 // Get active subscription
 router.get('/status', jwtAuthGuard, async (req, res) => {
     try {
-        const subscription = await getActiveSubscription(req.user._id);
-        res.json(subscription);
+        let existingBusiness = await retriveBusiness({
+            _id: req.user._id,
+        });
+        if (!existingBusiness) {
+            throw new Error('Business not found');
+        }
+        // const subscription = await getActiveSubscription(req.user._id);
+        // Get all subscriptions for the business
+        const subscriptions = await Subscription.find({
+            userId: req.user._id
+        }).sort({ currentPeriodStart: 1 });
+        if (subscriptions.length > 0) {
+            // Calculate first subscription start and last subscription end
+            const firstSubscriptionStart = subscriptions.length > 0 ? subscriptions[0].currentPeriodStart : null;
+            const lastSubscriptionEnd = subscriptions.length > 0 ? subscriptions[subscriptions.length - 1].currentPeriodEnd : null;
+
+            res.json({
+                ...subscriptions[0]?._doc,
+                currentPeriodStart: firstSubscriptionStart,
+                currentPeriodEnd: lastSubscriptionEnd,
+                email: existingBusiness.email,
+            });
+        } else {
+            res.json({
+                currentPeriodStart: null,
+                currentPeriodEnd: null,
+                email: existingBusiness.email,
+            });
+        }
     } catch (error) {
         res.status(400).json({ error: error.message });
     }

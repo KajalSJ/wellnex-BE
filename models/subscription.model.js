@@ -3,7 +3,7 @@ import mongoose from 'mongoose';
 const subscriptionSchema = new mongoose.Schema({
     userId: {
         type: mongoose.Schema.Types.ObjectId,
-        ref: 'Business',
+        ref: 'business',
         required: true
     },
     stripeCustomerId: {
@@ -24,7 +24,7 @@ const subscriptionSchema = new mongoose.Schema({
             'past_due',
             'trialing',
             'unpaid',
-            'paused'
+            'paused',
         ],
         required: true
     },

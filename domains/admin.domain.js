@@ -11,7 +11,7 @@ import moment from "moment-timezone";
 import awsEmailExternal from "../externals/send.email.external.js";
 import jwtMiddleware from "../middlewares/jwt.middleware.js";
 import businessService from "../services/business.service.js";
-import { getAllActiveSubscriptions, getSubscriptionCountsHandler, getPaymentListHandler, updateSubscriptionStatusHandler, getActiveSubscriptionDetails } from "../services/subscription.service.js";
+import { getAllActiveSubscriptions, getSubscriptionCountsHandler, getPaymentListHandler, updateSubscriptionStatusHandler, getActiveSubscriptionDetails, getLatestSubscriptionStatusCounts } from "../services/subscription.service.js";
 import Subscription from "../models/subscription.model.js";
 
 const { send200, send401, send400 } = responseHelper,
@@ -146,7 +146,7 @@ const adminSignup = [
       try {
         // Build filter object
         const filter = {
-          isDeleted: { $ne: true } // Exclude deleted businesses
+          // isDeleted: { $ne: true } // Exclude deleted businesses
         };
 
         // Add search filter if search parameter exists
@@ -189,7 +189,7 @@ const adminSignup = [
         ];
 
         const businessList = await retrieveAllBusiness(filter, sort, limit, offset, select);
-        
+
         if (!businessList) {
           return send400(res, {
             status: false,
@@ -201,21 +201,30 @@ const adminSignup = [
         // Get subscription details for each business
         const businessesWithSubscriptions = await Promise.all(
           businessList.docs.map(async (business) => {
-            const subscriptionDetail = await Subscription.findOne({
+            // First try to find an active subscription for today
+            let subscriptionDetail = await Subscription.findOne({
               userId: business._id,
-              status: { $in: ['active', 'trialing'] },
-              $or: [
-                { specialOfferExpiry: { $gt: new Date() } },
-                { currentPeriodEnd: { $gt: new Date() } }
-              ]
-            });
+              status: { $in: ['active', 'trialing', 'canceled', 'paused'] },
+              currentPeriodStart: { $lt: new Date() },
+              currentPeriodEnd: { $gte: new Date() }
+            }).sort({ createdAt: 1 });
+
+            // If no active subscription found, look for a valid special offer
+            if (!subscriptionDetail) {
+              subscriptionDetail = await Subscription.findOne({
+                userId: business._id,
+                status: { $in: ['active', 'trialing', 'canceled', 'paused'] },
+                specialOfferExpiry: { $gt: new Date() }
+              }).sort({ createdAt: 1 });
+            }
+
             return {
               ...business._doc,
               subscriptionDetail
             };
           })
         );
- 
+
         send200(res, {
           status: true,
           message: "Business List",
@@ -305,7 +314,7 @@ const adminSignup = [
     jwtAuthGuard,
     async (req, res) => {
       try {
-        const counts = await getSubscriptionCountsHandler();
+        const counts = await getLatestSubscriptionStatusCounts();
         send200(res, {
           status: true,
           message: "Subscription Counts",
