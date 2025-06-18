@@ -13,8 +13,18 @@ if (!endpointSecret || (!endpointSecret.startsWith('whsec_') && !endpointSecret.
 }
 
 // Important: This route must be before any body parsing middleware
-router.post('/', express.raw({ type: 'application/json' }), async (req, res) => {
+router.post('/', async (req, res) => {
     const sig = req.headers['stripe-signature'];
+
+    // Debug logging
+    console.log('Webhook received - Headers:', {
+        'stripe-signature': sig,
+        'content-type': req.headers['content-type'],
+        'content-length': req.headers['content-length']
+    });
+    console.log('Request body type:', typeof req.body);
+    console.log('Request body is Buffer:', Buffer.isBuffer(req.body));
+    console.log('Request body length:', req.body?.length);
 
     if (!sig) {
         console.error('No Stripe signature found in request headers');
@@ -33,14 +43,23 @@ router.post('/', express.raw({ type: 'application/json' }), async (req, res) => 
     try {
         // Ensure we're using the raw body buffer
         const rawBody = req.body;
-        
+
         // Additional validation
         if (!Buffer.isBuffer(rawBody)) {
             console.error('Request body is not a Buffer');
+            console.error('Body type:', typeof rawBody);
+            console.error('Body constructor:', rawBody?.constructor?.name);
             return res.status(400).send('Invalid request body format');
         }
 
+        console.log('Attempting to construct event with:');
+        console.log('- Signature:', sig);
+        console.log('- Secret length:', endpointSecret?.length);
+        console.log('- Body length:', rawBody?.length);
+        console.log('- Secret prefix:', endpointSecret?.substring(0, 3));
+
         event = stripe.webhooks.constructEvent(rawBody, sig, endpointSecret);
+        console.log('Event constructed successfully:', event.type);
     } catch (err) {
         console.error('Webhook signature verification failed:', err.message);
         console.error('Error details:', {
@@ -59,6 +78,15 @@ router.post('/', express.raw({ type: 'application/json' }), async (req, res) => 
         console.error('Error processing webhook:', error);
         res.status(500).json({ error: error.message });
     }
+});
+
+// Test endpoint to verify webhook route is accessible
+router.get('/test', (req, res) => {
+    res.json({ 
+        message: 'Webhook endpoint is working!',
+        timestamp: new Date().toISOString(),
+        webhookSecret: endpointSecret ? 'Configured' : 'Not configured'
+    });
 });
 
 export default router; 

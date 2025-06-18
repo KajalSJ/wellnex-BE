@@ -35,7 +35,7 @@ openaiRouter.post('/start-chat', async (req, res) => {
       userId: businessId,
       status: { $in: ['active', 'trialing', 'canceled', 'paused'] },
       currentPeriodStart: { $lt: new Date() },
-      currentPeriodEnd: { $gt: new Date() }
+      currentPeriodEnd: { $gte: new Date() }
     }).sort({ createdAt: 1 });
 
     // If no active subscription found, look for a valid special offer
@@ -52,7 +52,7 @@ openaiRouter.post('/start-chat', async (req, res) => {
       status: 'canceled',
       cancelAtPeriodEnd: true,
       $or: [
-        { currentPeriodEnd: { $gt: new Date() } },
+        { currentPeriodEnd: { $gte: new Date() } },
         { currentPeriodStart: { $lt: new Date() } }
       ]
     });
@@ -203,59 +203,59 @@ openaiRouter.post('/submit-answer', async (req, res) => {
     const currentQuestion = session.questions[session.currentQuestionIndex].name;
 
     // Check if the answer is a greeting
-    const greetingKeywords = ['hi', 'hello', 'hey', 'good morning', 'good afternoon', 'good evening', 'greetings'];
-    const isGreeting = greetingKeywords.some(keyword =>
-      answer.toLowerCase().includes(keyword)
-    );
+//     const greetingKeywords = ['hi', 'hello', 'hey', 'good morning', 'good afternoon', 'good evening', 'greetings'];
+//     const isGreeting = greetingKeywords.some(keyword =>
+//       answer.toLowerCase().includes(keyword)
+//     );
 
-    if (isGreeting) {
-      // Generate a greeting response
-      const greetingPrompt = `The customer has sent a greeting. Please provide a friendly response that:
-1. Acknowledges their greeting
-2. Introduces the consultation process
-3. Keeps the tone warm and professional
-4. DO NOT introduce yourself with a name
-5. DO NOT use phrases like "my name is" or "I am"
-6. DO NOT make any assumptions about the customer's needs
-7. DO NOT suggest any services not explicitly listed
-8. DO NOT GIVE DETAILED SUGGESTIONS
+//     if (isGreeting) {
+//       // Generate a greeting response
+//       const greetingPrompt = `The customer has sent a greeting. Please provide a friendly response that:
+// 1. Acknowledges their greeting
+// 2. Introduces the consultation process
+// 3. Keeps the tone warm and professional
+// 4. DO NOT introduce yourself with a name
+// 5. DO NOT use phrases like "my name is" or "I am"
+// 6. DO NOT make any assumptions about the customer's needs
+// 7. DO NOT suggest any services not explicitly listed
+// 8. DO NOT GIVE DETAILED SUGGESTIONS
 
-Example good responses:
-- "Hello! Welcome to our consultation service. I'm here to help you find the best services for your needs."
-- "Hi there! Thank you for reaching out. I'll guide you through our consultation process to better understand your needs."
-- "Good morning! Welcome to our service. I'm ready to help you explore our available options."
+// Example good responses:
+// - "Hello! Welcome to our consultation service. I'm here to help you find the best services for your needs."
+// - "Hi there! Thank you for reaching out. I'll guide you through our consultation process to better understand your needs."
+// - "Good morning! Welcome to our service. I'm ready to help you explore our available options."
 
-Customer's greeting: "${answer}"`;
+// Customer's greeting: "${answer}"`;
 
-      const greetingResponse = await openai.chat.completions.create({
-        model: "gpt-4o",
-        temperature: 0.5,
-        max_tokens: 500,
-        messages: [{ role: "user", content: greetingPrompt }],
-      });
+//       const greetingResponse = await openai.chat.completions.create({
+//         model: "gpt-4o",
+//         temperature: 0.5,
+//         max_tokens: 500,
+//         messages: [{ role: "user", content: greetingPrompt }],
+//       });
 
-      return res.json({
-        sessionId,
-        messages: [
-          {
-            type: "greeting",
-            content: greetingResponse.choices[0].message.content
-          },
-          {
-            type: "info",
-            content: "I'll ask you a few questions to better understand your needs."
-          },
-          {
-            type: "question",
-            content: currentQuestion,
-            isLastQuestion: session.currentQuestionIndex === session.questions.length - 1
-          }
-        ]
-      });
-    }
+//       return res.json({
+//         sessionId,
+//         messages: [
+//           {
+//             type: "greeting",
+//             content: greetingResponse.choices[0].message.content
+//           },
+//           {
+//             type: "info",
+//             content: "I'll ask you a few questions to better understand your needs."
+//           },
+//           {
+//             type: "question",
+//             content: currentQuestion,
+//             isLastQuestion: session.currentQuestionIndex === session.questions.length - 1
+//           }
+//         ]
+//       });
+//     }
 
     // Check if the answer is actually a question about services
-    const serviceQuestionKeywords = ['what', 'which', 'tell me about', 'do you offer', 'do you have', 'what kind of', 'what types of', 'what services', 'what treatments'];
+    const serviceQuestionKeywords = ['what', 'which', 'tell me about', 'do you offer', 'do you have', 'what kind of', 'what types of', 'what services', 'what treatments', 'I am looking for', 'looking for', 'I want', 'I need'];
     const isServiceQuestion = serviceQuestionKeywords.some(keyword =>
       answer.toLowerCase().includes(keyword)
     );
@@ -266,12 +266,18 @@ Customer's greeting: "${answer}"`;
 ${session.services.map(s => `- ${s.name}`).join('\n')}
 
 Please provide a friendly response that:
-1. Acknowledges their question
-2. Lists ONLY the services from the provided list
-3. DO NOT suggest any services not in the list
-4. DO NOT make assumptions about what services they might need
-5. DO NOT provide extra suggestions or recommendations
-6. Keep the tone professional and helpful
+1. Acknowledges their greeting if it is a greeting
+2. Then acknowledges their question
+3. Lists ONLY the services from the provided list
+4. DO NOT suggest any services not in the list
+5. DO NOT make assumptions about what services they might need
+6. DO NOT provide extra suggestions or recommendations
+7. Keep the tone professional and helpful
+8. DO NOT introduce yourself with a name
+9. DO NOT use phrases like "my name is" or "I am"
+10. DO NOT make any assumptions about the customer's needs
+11. DO NOT suggest any services not explicitly listed
+12. DO NOT GIVE DETAILED SUGGESTIONS
 
 Customer's question: "${answer}"`;
 

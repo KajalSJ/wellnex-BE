@@ -26,7 +26,7 @@ export const getChatBotDetail = async (req, res) => {
                 userId: businessId,
                 status: { $in: ['active', 'trialing', 'canceled', 'paused'] },
                 currentPeriodStart: { $lt: new Date() },
-                currentPeriodEnd: { $gt: new Date() }
+                currentPeriodEnd: { $gte: new Date() }
             }).sort({ createdAt: 1 });
 
             // If no active subscription found, look for a valid special offer

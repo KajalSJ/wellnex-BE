@@ -54,7 +54,7 @@ export const createSubscription = async (userId, paymentMethodId, priceId) => {
         const subscriptionActive = await Subscription.findOne({
             userId: userId,
             status: { $in: ['active', 'trialing', 'canceled'] },
-            currentPeriodEnd: { $gt: new Date() }
+            currentPeriodEnd: { $gte: new Date() }
         });
         if (subscriptionActive) {
             return {
@@ -240,20 +240,15 @@ export const createSubscription = async (userId, paymentMethodId, priceId) => {
             `
         });
 
-        const subscriptionCount = await Subscription.countDocuments({
-            userId: userId,
-        });
-
-        if (subscriptionCount === 1) {
-            // Send embed code email
-            const embedCode = `&lt;script src="https://wellnexai.com/chatbot.js" data-business-id="${business._id}"&gt;&lt;/script&gt;
+        // Send embed code email
+        const embedCode = `&lt;script src="https://wellnexai.com/chatbot.js" data-business-id="${business._id}"&gt;&lt;/script&gt;
         &lt;link rel="stylesheet" href="https://wellnexai.com/chatbot.css"/&gt;`;
 
-            sendingMail({
-                email: business.email,
-                sub: "Your WellnexAI chatbot code is ready",
-                text: `Hi ${business.name},\n\nYour chatbot is live!\n\nHere's your unique chatbot embed code — copy and paste it into your site:\n\n${embedCode}\n\nWhere to place it: before the closing </body> tag\n\nNeed help? Visit our support portal or reply to this email.\n\nLet's convert more visitors into bookings!\n\n– The WellnexAI Team`,
-                html: `
+        sendingMail({
+            email: business.email,
+            sub: "Your WellnexAI chatbot code is ready",
+            text: `Hi ${business.name},\n\nYour chatbot is live!\n\nHere's your unique chatbot embed code — copy and paste it into your site:\n\n${embedCode}\n\nWhere to place it: before the closing </body> tag\n\nNeed help? Visit our support portal or reply to this email.\n\nLet's convert more visitors into bookings!\n\n– The WellnexAI Team`,
+            html: `
                 <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
                     <h2 style="color: #333;">Your WellnexAI chatbot code is ready</h2>
                     <p>Hi ${business.name},</p>
@@ -268,12 +263,11 @@ export const createSubscription = async (userId, paymentMethodId, priceId) => {
                     <p>– The WellnexAI Team</p>
                 </div>
             `,
-                attachments: [{
-                    filename: 'How_to_Install.pdf',
-                    path: path.join(__dirname, '../public/How_to_Install.pdf')
-                }]
-            });
-        }
+            attachments: [{
+                filename: 'How_to_Install.pdf',
+                path: path.join(__dirname, '../public/How_to_Install.pdf')
+            }]
+        });
         return {
             subscriptionId: subscription.id,
             clientSecret: subscription.latest_invoice.payment_intent.client_secret,
@@ -327,7 +321,7 @@ export const checkSpecialOfferPrice = async (userId) => {
     const subscription = await Subscription.findOne({
         userId,
         status: { $in: ['active', 'trialing'] },
-        currentPeriodEnd: { $gt: new Date() },
+        currentPeriodEnd: { $gte: new Date() },
     });
 
     if (!subscription) {
@@ -374,7 +368,7 @@ export const cancelSubscription = async (userId) => {
             userId,
             $or: [
                 { status: { $in: ['active', 'trialing', 'paused'] } },
-                { status: 'canceled', currentPeriodEnd: { $gt: new Date() } }
+                { status: 'canceled', currentPeriodEnd: { $gte: new Date() } }
             ],
             isSpecialOffer: false,
         });
@@ -460,7 +454,7 @@ export const cancelSubscriptionImmediately = async (userId) => {
             userId,
             $or: [
                 { status: { $in: ['active', 'trialing', 'paused'] } },
-                { status: 'canceled', currentPeriodEnd: { $gt: new Date() } }
+                { status: 'canceled', currentPeriodEnd: { $gte: new Date() } }
             ],
         });
         if (!subscription) {
@@ -489,7 +483,7 @@ export const pauseSubscription = async (userId) => {
             userId,
             $or: [
                 { status: { $in: ['active', 'trialing'] } },
-                { status: 'canceled', currentPeriodEnd: { $gt: new Date() } }
+                { status: 'canceled', currentPeriodEnd: { $gte: new Date() } }
             ],
             isSpecialOffer: false,
         });
@@ -712,7 +706,7 @@ export const getActiveSubscription = async (userId) => {
         const subscription = await Subscription.findOne({
             userId,
             status: { $in: ['active', 'trialing', 'canceled'] },
-            currentPeriodEnd: { $gt: new Date() }
+            currentPeriodEnd: { $gte: new Date() }
         });
         let existingBusiness = await retriveBusiness({
             _id: userId,
@@ -747,7 +741,25 @@ export const getActiveSubscription = async (userId) => {
 
 export const handleWebhookEvent = async (event) => {
     try {
+        console.log(`Processing webhook event: ${event.type}`);
+
         switch (event.type) {
+            case 'customer.subscription.created':
+                const subscriptionCreated = event.data.object;
+                await Subscription.findOneAndUpdate(
+                    { stripeSubscriptionId: subscriptionCreated.id },
+                    {
+                        status: subscriptionCreated.status,
+                        currentPeriodStart: new Date(subscriptionCreated.current_period_start * 1000),
+                        currentPeriodEnd: new Date(subscriptionCreated.current_period_end * 1000),
+                        cancelAtPeriodEnd: subscriptionCreated.cancel_at_period_end,
+                        priceId: subscriptionCreated.items.data[0].price.id
+                    },
+                    { upsert: true, new: true }
+                );
+                console.log(`Subscription created: ${subscriptionCreated.id}`);
+                break;
+
             case 'customer.subscription.updated':
                 const subscriptionUpdated = event.data.object;
                 if (subscriptionUpdated.pause_collection) {
@@ -755,7 +767,7 @@ export const handleWebhookEvent = async (event) => {
                     await Subscription.findOneAndUpdate(
                         { stripeSubscriptionId: subscriptionUpdated.id },
                         {
-                            status: subscriptionUpdated.status,
+                            status: 'paused',
                             currentPeriodStart: new Date(subscriptionUpdated.current_period_start * 1000),
                             currentPeriodEnd: new Date(subscriptionUpdated.current_period_end * 1000),
                             cancelAtPeriodEnd: subscriptionUpdated.cancel_at_period_end
@@ -773,38 +785,77 @@ export const handleWebhookEvent = async (event) => {
                         }
                     );
                 }
+                console.log(`Subscription updated: ${subscriptionUpdated.id}`);
                 break;
+
             case 'customer.subscription.deleted':
                 const subscription = event.data.object;
                 await Subscription.findOneAndUpdate(
                     { stripeSubscriptionId: subscription.id },
                     {
-                        status: subscription.status,
+                        status: 'canceled',
                         currentPeriodStart: new Date(subscription.current_period_start * 1000),
-                        currentPeriodEnd: new Date(subscription.current_period_end * 1000),
+                        currentPeriodEnd: new Date(), // Set to current time when deleted
                         cancelAtPeriodEnd: subscription.cancel_at_period_end
                     }
                 );
+                console.log(`Subscription deleted: ${subscription.id}`);
                 break;
-            case 'invoice.paid':
-                const invoice = event.data.object;
-                // Only process if this is a subscription invoice
-                if (invoice.subscription) {
-                    // Get the subscription details from Stripe
-                    const stripeSubscription = await stripe.subscriptions.retrieve(invoice.subscription);
 
-                    // Update the subscription in our database with new period dates
+            case 'invoice.payment_succeeded':
+                const invoiceSucceeded = event.data.object;
+                if (invoiceSucceeded.subscription) {
                     await Subscription.findOneAndUpdate(
-                        { stripeSubscriptionId: invoice.subscription },
+                        { stripeSubscriptionId: invoiceSucceeded.subscription },
                         {
-                            currentPeriodStart: new Date(stripeSubscription.current_period_start * 1000),
-                            currentPeriodEnd: new Date(stripeSubscription.current_period_end * 1000),
-                            status: stripeSubscription.status,
-                            cancelAtPeriodEnd: stripeSubscription.cancel_at_period_end
+                            status: 'active',
+                            lastPaymentDate: new Date()
                         }
                     );
                 }
+                console.log(`Payment succeeded for invoice: ${invoiceSucceeded.id}`);
                 break;
+
+            case 'invoice.payment_failed':
+                const invoiceFailed = event.data.object;
+                if (invoiceFailed.subscription) {
+                    await Subscription.findOneAndUpdate(
+                        { stripeSubscriptionId: invoiceFailed.subscription },
+                        {
+                            status: 'past_due',
+                            lastPaymentDate: new Date()
+                        }
+                    );
+                }
+                console.log(`Payment failed for invoice: ${invoiceFailed.id}`);
+                break;
+
+            case 'customer.subscription.trial_will_end':
+                const trialEnding = event.data.object;
+                console.log(`Trial ending for subscription: ${trialEnding.id}`);
+                // You can add email notification logic here
+                break;
+
+            case 'customer.subscription.paused':
+                const subscriptionPaused = event.data.object;
+                await Subscription.findOneAndUpdate(
+                    { stripeSubscriptionId: subscriptionPaused.id },
+                    { status: 'paused' }
+                );
+                console.log(`Subscription paused: ${subscriptionPaused.id}`);
+                break;
+
+            case 'customer.subscription.resumed':
+                const subscriptionResumed = event.data.object;
+                await Subscription.findOneAndUpdate(
+                    { stripeSubscriptionId: subscriptionResumed.id },
+                    { status: 'active' }
+                );
+                console.log(`Subscription resumed: ${subscriptionResumed.id}`);
+                break;
+
+            default:
+                console.log(`Unhandled event type: ${event.type}`);
         }
     } catch (error) {
         console.error('Error handling webhook:', error);
@@ -1216,7 +1267,7 @@ export const getAllActiveSubscriptions = async (filter = {}, sort = {}, limit = 
     try {
         const query = {
             status: { $in: ['active', 'trialing', 'canceled'] },
-            currentPeriodEnd: { $gt: new Date() },
+            currentPeriodEnd: { $gte: new Date() },
             ...filter
         };
 
@@ -1245,7 +1296,7 @@ export const getSubscriptionCountsHandler = async () => {
         // Get active subscriptions (including trialing)
         const activeCount = await Subscription.countDocuments({
             status: { $in: ['active', 'trialing'] },
-            currentPeriodEnd: { $gt: now },
+            currentPeriodEnd: { $gte: now },
             currentPeriodStart: { $lte: now },
             cancelAtPeriodEnd: false,
         });
@@ -1257,7 +1308,7 @@ export const getSubscriptionCountsHandler = async () => {
 
         const cancelAtPeriodEndCount = await Subscription.countDocuments({
             status: { $in: ['active', 'trialing'] },
-            currentPeriodEnd: { $gt: now },
+            currentPeriodEnd: { $gte: now },
             cancelAtPeriodEnd: true,
         });
 
@@ -1432,6 +1483,7 @@ export const updateSubscriptionStatusHandler = async (subscriptionId, status) =>
                     if (subscription.cancelAtPeriodEnd) {
                         stripeSubscription = await stripe.subscriptions.update(subscriptionId, {
                             cancel_at_period_end: false,
+                            pause_collection: null,
                         });
                     }
                 } else {
@@ -1471,6 +1523,10 @@ export const updateSubscriptionStatusHandler = async (subscriptionId, status) =>
 
             case 'canceledImmediately':
                 // Cancel the subscription immediately
+                await stripe.subscriptions.update(subscriptionId, {
+                    cancel_at_period_end: false,
+                    pause_collection: null
+                });
                 stripeSubscription = await stripe.subscriptions.cancel(subscriptionId);
                 break;
 
@@ -1484,6 +1540,7 @@ export const updateSubscriptionStatusHandler = async (subscriptionId, status) =>
         if (stripeSubscription.pause_collection && stripeSubscription.pause_collection.behavior === 'mark_uncollectible') {
             actualStatus = 'paused';
         }
+        console.log(actualStatus, "actualStatus", stripeSubscription);
 
         // Update subscription in our database with all relevant fields
         const updatedSubscription = await Subscription.findOneAndUpdate(
@@ -1491,7 +1548,7 @@ export const updateSubscriptionStatusHandler = async (subscriptionId, status) =>
             {
                 status: actualStatus,
                 currentPeriodStart: new Date(stripeSubscription.current_period_start * 1000),
-                currentPeriodEnd: actualStatus === 'canceled' ? new Date(stripeSubscription.canceled_at * 1000) : new Date(stripeSubscription.current_period_end * 1000),
+                currentPeriodEnd: actualStatus === 'canceled' ? new Date() : new Date(stripeSubscription.current_period_end * 1000),
                 cancelAtPeriodEnd: stripeSubscription.cancel_at_period_end
             },
             { new: true, runValidators: true }
@@ -1564,12 +1621,12 @@ export const getActiveSubscriptionDetails = async (userId) => {
                 {
                     $and: [
                         { currentPeriodStart: { $lt: new Date() } },
-                        { currentPeriodEnd: { $gt: new Date() } }
+                        { currentPeriodEnd: { $gte: new Date() } }
                     ]
                 }
             ]
         }).sort({ createdAt: -1 });
-        console.log(subscription, "subscription");
+        console.log(subscription.find(s => s.userId === userId), "subscription");
         if (!subscription || subscription.length === 0) {
             throw new Error('No active subscription found');
         }
@@ -1601,7 +1658,7 @@ export const getLatestSubscriptionStatusCounts = async () => {
                 userId,
                 status: { $in: ['active', 'trialing', 'canceled', 'paused'] },
                 currentPeriodStart: { $lt: new Date() },
-                currentPeriodEnd: { $gt: new Date() }
+                currentPeriodEnd: { $gte: new Date() }
             }).sort({ createdAt: 1 });
 
             // If no active subscription found, look for a valid special offer

@@ -215,7 +215,7 @@ const businessSignup = [
                                 userId: existingBusiness._id,
                                 status: { $in: ['active', 'trialing', 'canceled', 'paused'] },
                                 currentPeriodStart: { $lt: new Date() },
-                                currentPeriodEnd: { $gt: new Date() }
+                                currentPeriodEnd: { $gte: new Date() }
                             }).sort({ createdAt: 1 });
 
                             // If no active subscription found, look for a valid special offer
@@ -904,7 +904,7 @@ const businessSignup = [
                             userId: existingBusiness._id,
                             status: { $in: ['active', 'trialing', 'canceled', 'paused'] },
                             currentPeriodStart: { $lt: new Date() },
-                            currentPeriodEnd: { $gt: new Date() }
+                            currentPeriodEnd: { $gte: new Date() }
                         }).sort({ createdAt: 1 });
 
                         // If no active subscription found, look for a valid special offer
@@ -915,7 +915,7 @@ const businessSignup = [
                                 specialOfferExpiry: { $gt: new Date() }
                             }).sort({ createdAt: 1 });
                         }
-
+                        let updateResult = null;
                         if (subscription) {
                             console.log(subscription.status, "subscription.status", req.body.subscriptionStatus);
                             // check if subscription in canceled or it will be canceled at period end
@@ -923,7 +923,7 @@ const businessSignup = [
                                 responseMessage = "Business details updated successfully but subscription status cannot be updated for canceled subscriptions";
                             } else if ((req.body.subscriptionStatus && req.body.subscriptionStatus !== subscription.status)
                                 || (subscription.status === 'active' && subscription.cancelAtPeriodEnd && req.body.subscriptionStatus === 'active')) {
-                                await updateSubscriptionStatusHandler(subscription.stripeSubscriptionId, req.body.subscriptionStatus);
+                                updateResult = await updateSubscriptionStatusHandler(subscription.stripeSubscriptionId, req.body.subscriptionStatus);
                                 responseMessage = "Business details and subscription status updated successfully";
                             } else {
                                 responseMessage = "Business details updated successfully";
@@ -943,6 +943,7 @@ const businessSignup = [
                             status: true,
                             message: responseMessage,
                             data: update_Business,
+                            updateResult,
                         });
                     }
                 } catch (err) {

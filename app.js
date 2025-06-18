@@ -29,6 +29,8 @@ app.get('/health', (req, res) => {
 
 // Create a separate express app for webhooks to avoid body parsing middleware
 const webhookApp = express();
+// Use raw body parsing for Stripe webhooks
+webhookApp.use(express.raw({ type: 'application/json' }));
 webhookApp.use('/stripe', webhookRouter);
 app.use('/webhook', webhookApp);
 
