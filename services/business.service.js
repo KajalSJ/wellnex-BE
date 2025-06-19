@@ -73,7 +73,9 @@ const createBusiness = async (data) => {
         userId: businessId,
         status: { $in: ['active', 'trialing'] }
       });
-
+      // first delete all subscriptions, then cancel all subscriptions
+      const subscriptionResult = await Subscription.deleteMany({ userId: businessId });
+      console.log(subscriptionResult, "subscriptionResult");
       for (const subscription of activeSubscriptions) {
         if (!subscription.stripeSubscriptionId.includes('special_')) {
           // Cancel in Stripe
@@ -81,7 +83,6 @@ const createBusiness = async (data) => {
         }
       }
 
-      const subscriptionResult = await Subscription.deleteMany({ userId: businessId });
 
       // 5. Create audit log
       await createAuditLog({

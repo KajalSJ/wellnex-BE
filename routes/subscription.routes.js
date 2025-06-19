@@ -1,5 +1,5 @@
 import express from 'express';
-import { createSubscription, cancelSubscription, getActiveSubscription, getSavedCards, getSubscriptionPlans, removeSavedCard, applySpecialOffer, checkSpecialOfferPrice, getProductPrices, renewSubscriptionAfterSpecialOffer, setDefaultCard, updateCardDetails, updatePreferredCurrency } from '../services/subscription.service.js';
+import { createSubscription, cancelSubscription, getActiveSubscription, getSavedCards, getSubscriptionPlans, removeSavedCard, applySpecialOffer, checkSpecialOfferPrice, getProductPrices, renewSubscriptionAfterSpecialOffer, setDefaultCard, updateCardDetails, updatePreferredCurrency, changeSubscriptionCard } from '../services/subscription.service.js';
 import jwtMiddleware from '../middlewares/jwt.middleware.js';
 import Subscription from '../models/subscription.model.js';
 import businessService from '../services/business.service.js';
@@ -55,9 +55,10 @@ router.get('/status', jwtAuthGuard, async (req, res) => {
             // Calculate first subscription start and last subscription end
             const firstSubscriptionStart = subscriptions.length > 0 ? subscriptions[0].currentPeriodStart : null;
             const lastSubscriptionEnd = subscriptions.length > 0 ? subscriptions[subscriptions.length - 1].currentPeriodEnd : null;
+console.log(subscriptions);
 
             res.json({
-                ...subscriptions[0]?._doc,
+                ...subscriptions[subscriptions.length - 1]?._doc,
                 currentPeriodStart: firstSubscriptionStart,
                 currentPeriodEnd: lastSubscriptionEnd,
                 email: existingBusiness.email,
@@ -203,6 +204,25 @@ router.post('/update-preferred-currency', jwtAuthGuard, async (req, res) => {
             message: error.message,
             data: null
         });
+    }
+});
+
+// Change subscription card
+router.post('/change-card', jwtAuthGuard, async (req, res) => {
+    try {
+        const { paymentMethodId } = req.body;
+
+        if (!paymentMethodId) {
+            return res.status(400).json({
+                message: 'Missing required parameter: paymentMethodId is required'
+            });
+        }
+
+        const result = await changeSubscriptionCard(req.user._id, paymentMethodId);
+        res.json(result);
+    } catch (error) {
+        console.error('Error changing subscription card:', error);
+        res.status(400).json({ message: error.message });
     }
 });
 

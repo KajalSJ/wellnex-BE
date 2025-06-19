@@ -216,7 +216,7 @@ const adminSignup = [
                 specialOfferExpiry: { $gt: new Date() }
               }).sort({ createdAt: 1 });
             }
-            console.log(subscriptionDetail, subscriptionDetail?.currentPeriodEnd, "subscriptionDetail", new Date());
+            console.log(subscriptionDetail.userId, subscriptionDetail?.currentPeriodEnd, "subscriptionDetail", new Date());
 
             return {
               ...business._doc,

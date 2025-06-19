@@ -1656,9 +1656,16 @@ export const getLatestSubscriptionStatusCounts = async () => {
             // First try to find an active subscription for today
             let latestSubscription = await Subscription.findOne({
                 userId,
-                status: { $in: ['active', 'trialing', 'canceled', 'paused'] },
+                $or: [
+                    {
+                        $and: [
+                            { status: { $in: ['active', 'trialing', 'paused'] } },
+                            { currentPeriodEnd: { $gte: new Date() } },
+                        ]
+                    },
+                    { status: { $in: ['canceled'] } }
+                ],
                 currentPeriodStart: { $lt: new Date() },
-                currentPeriodEnd: { $gte: new Date() }
             }).sort({ createdAt: 1 });
 
             // If no active subscription found, look for a valid special offer
@@ -1669,6 +1676,8 @@ export const getLatestSubscriptionStatusCounts = async () => {
                     specialOfferExpiry: { $gt: new Date() }
                 }).sort({ createdAt: 1 });
             }
+
+            console.log(latestSubscription.status, "latestSubscription", latestSubscription.userId, latestSubscription.currentPeriodEnd, latestSubscription.currentPeriodStart);
             if (latestSubscription) {
                 switch (latestSubscription.status) {
                     case 'active':
@@ -1687,9 +1696,124 @@ export const getLatestSubscriptionStatusCounts = async () => {
                 }
             }
         }
+        console.log(counts, "counts");
         return counts;
     } catch (error) {
         console.error('Error getting subscription status counts:', error);
         throw new Error(`Failed to get subscription status counts: ${error.message}`);
+    }
+};
+
+export const changeSubscriptionCard = async (userId, newPaymentMethodId) => {
+    try {
+        // Find the active subscription
+        const subscription = await Subscription.findOne({
+            userId,
+            status: { $in: ['active', 'trialing'] },
+            currentPeriodEnd: { $gte: new Date() }
+        });
+
+        if (!subscription) {
+            throw new Error('No active subscription found');
+        }
+
+        const business = await Business.findById({ _id: userId });
+        if (!business) {
+            throw new Error('Business not found');
+        }
+
+        if (!business.stripeCustomerId) {
+            throw new Error('No Stripe customer found');
+        }
+
+        // Get payment method details to check for duplicates
+        const paymentMethod = await stripe.paymentMethods.retrieve(newPaymentMethodId);
+        let finalPaymentMethodId = newPaymentMethodId;
+        let isDuplicate = false;
+
+        // Get all saved payment methods for the customer
+        const savedPaymentMethods = await stripe.paymentMethods.list({
+            customer: business.stripeCustomerId,
+            type: 'card',
+        });
+
+        // Check if this card is already saved
+        isDuplicate = savedPaymentMethods.data.some(savedMethod =>
+            savedMethod.card.fingerprint === paymentMethod.card.fingerprint
+        );
+
+        if (!isDuplicate) {
+            // Attach the payment method to the customer
+            await stripe.paymentMethods.attach(newPaymentMethodId, {
+                customer: business.stripeCustomerId,
+            });
+        } else {
+            // If it's a duplicate, find the existing payment method ID
+            const existingMethod = savedPaymentMethods.data.find(
+                savedMethod => savedMethod.card.fingerprint === paymentMethod.card.fingerprint
+            );
+            if (existingMethod) {
+                finalPaymentMethodId = existingMethod.id;
+            }
+        }
+
+        // Set as default payment method
+        await stripe.customers.update(business.stripeCustomerId, {
+            invoice_settings: {
+                default_payment_method: finalPaymentMethodId,
+            },
+        });
+
+        // Update the subscription's default payment method
+        await stripe.subscriptions.update(subscription.stripeSubscriptionId, {
+            default_payment_method: finalPaymentMethodId,
+        });
+
+        // Update the subscription record in our database
+        subscription.paymentMethodId = finalPaymentMethodId;
+        await subscription.save();
+
+        // Send confirmation email
+        const today = new Date().toLocaleDateString('en-US', {
+            year: 'numeric',
+            month: 'long',
+            day: 'numeric'
+        });
+
+        await sendingMail({
+            email: business.email,
+            sub: "Your WellnexAI Payment Method Has Been Updated",
+            text: `Hi ${business.name},\n\nYour payment method for your WellnexAI subscription has been successfully updated.\n\nDate: ${today}\n\nYour next payment will be processed using your new payment method.\n\nYou can view or manage your billing at any time via your Dashboard.\n\nQuestions? Email support@wellnexai.com\n\nThanks for being part of the WellnexAI community!`,
+            html: `
+                <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+                    <h2 style="color: #333;">Your WellnexAI Payment Method Has Been Updated</h2>
+                    <p>Hi ${business.name},</p>
+                    <p>Your payment method for your WellnexAI subscription has been successfully updated.</p>
+                    <div style="background-color: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0;">
+                        <p style="margin: 5px 0;"><strong>Date:</strong> ${today}</p>
+                        <p style="margin: 5px 0;"><strong>Card:</strong> ${paymentMethod.card.brand.toUpperCase()} ending in ${paymentMethod.card.last4}</p>
+                    </div>
+                    <p>Your next payment will be processed using your new payment method.</p>
+                    <p>You can view or manage your billing at any time via your <a href="https://wellnexai.com/dashboard" style="color: #007bff; text-decoration: none;">Dashboard</a>.</p>
+                    <p>Questions? Email <a href="mailto:support@wellnexai.com" style="color: #007bff; text-decoration: none;">support@wellnexai.com</a></p>
+                    <p>Thanks for being part of the WellnexAI community!</p>
+                </div>
+            `
+        });
+
+        return {
+            success: true,
+            message: 'Payment method updated successfully. Future payments will be charged to your new card.',
+            isNewCard: !isDuplicate,
+            cardDetails: {
+                brand: paymentMethod.card.brand,
+                last4: paymentMethod.card.last4,
+                exp_month: paymentMethod.card.exp_month,
+                exp_year: paymentMethod.card.exp_year
+            }
+        };
+    } catch (error) {
+        console.error('Error changing subscription card:', error);
+        throw new Error(`Error changing subscription card: ${error.message}`);
     }
 };
