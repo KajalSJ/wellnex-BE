@@ -7,19 +7,21 @@ const { sendingMail } = awsEmailExternal;
 // Function to check for expiring special offers
 const checkExpiringSpecialOffers = async () => {
     try {
-        // Get all special offers expiring in the next 30 days
+        // Get all special offers expiring in the next 7 days
         const today = new Date();
         today.setHours(0, 0, 0, 0);
-        const tomorrow = new Date(today);
-        tomorrow.setDate(tomorrow.getDate());
+        const nextWeek = new Date(today);
+        nextWeek.setDate(nextWeek.getDate() + 7);
 
         const expiringOffers = await Subscription.find({
             isSpecialOffer: true,
-            specialOfferExpiry: {
+            specialOfferStatus: 'applied',
+            specialOfferDiscountEnd: {
                 $gte: today,
-                $lte: tomorrow
+                $lte: nextWeek
             }
         });
+
 
         // Send notifications for each expiring offer
         for (const offer of expiringOffers) {
@@ -29,10 +31,10 @@ const checkExpiringSpecialOffers = async () => {
             }
 
             // Calculate days until expiry
-            const daysUntilExpiry = Math.ceil((new Date(offer.specialOfferExpiry) - today) / (1000 * 60 * 60 * 24));
+            const daysUntilExpiry = Math.ceil((new Date(offer.specialOfferDiscountEnd) - today) / (1000 * 60 * 60 * 24));
 
             // Format dates for email
-            const expiryDate = new Date(offer.specialOfferExpiry).toLocaleDateString('en-US', {
+            const expiryDate = new Date(offer.specialOfferDiscountEnd).toLocaleDateString('en-US', {
                 year: 'numeric',
                 month: 'long',
                 day: 'numeric'
@@ -51,7 +53,7 @@ const checkExpiringSpecialOffers = async () => {
                         <div style="background-color: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0;">
                             <p style="margin: 5px 0;"><strong>Days Until Expiry:</strong> ${daysUntilExpiry} days</p>
                             <p style="margin: 5px 0;"><strong>Expiry Date:</strong> ${expiryDate}</p>
-                            <p style="margin: 5px 0;"><strong>Current Plan:</strong> Special Offer (${offer.specialOfferPrice} ${offer.currency.toUpperCase()})</p>
+                            <p style="margin: 5px 0;"><strong>Current Plan:</strong> Special Offer ($${offer.specialOfferPrice} ${offer.currency.toUpperCase()})</p>
                         </div>
                         <p>To continue enjoying our services, please renew your subscription through your <a href="https://wellnexai.com/dashboard" style="color: #007bff; text-decoration: none;">dashboard</a>.</p>
                         <p>If you have any questions or need assistance, please don't hesitate to contact our support team.</p>
@@ -59,6 +61,24 @@ const checkExpiringSpecialOffers = async () => {
                     </div>
                 `
             });
+        }
+
+        // Mark expired special offers
+        const expiredOffers = await Subscription.find({
+            isSpecialOffer: true,
+            specialOfferStatus: 'applied',
+            specialOfferDiscountEnd: { $lt: today }
+        });
+
+        if (expiredOffers.length > 0) {
+            await Subscription.updateMany(
+                {
+                    isSpecialOffer: true,
+                    specialOfferStatus: 'applied',
+                    specialOfferDiscountEnd: { $lt: today }
+                },
+                { specialOfferStatus: 'expired' }
+            );
         }
     } catch (error) {
         console.error('Error checking expiring special offers:', error);

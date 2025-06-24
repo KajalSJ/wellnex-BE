@@ -75,12 +75,9 @@ const createBusiness = async (data) => {
       });
       // first delete all subscriptions, then cancel all subscriptions
       const subscriptionResult = await Subscription.deleteMany({ userId: businessId });
-      console.log(subscriptionResult, "subscriptionResult");
       for (const subscription of activeSubscriptions) {
-        if (!subscription.stripeSubscriptionId.includes('special_')) {
-          // Cancel in Stripe
-          let cancelResult = await stripe.subscriptions.cancel(subscription.stripeSubscriptionId);
-        }
+        // Cancel in Stripe
+        await stripe.subscriptions.cancel(subscription.stripeSubscriptionId);
       }
 
 

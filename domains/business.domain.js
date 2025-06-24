@@ -16,9 +16,11 @@ import fs from 'fs';
 import config from "../configurations/app.config.js";
 import businessModel from "../models/business.model.js";
 import adminService from "../services/admin.service.js";
-import { cancelSubscription, cancelSubscriptionImmediately, getActiveSubscriptionDetails, pauseSubscription, resumeSubscription, updateSubscriptionStatusHandler } from "../services/subscription.service.js";
+import { getActiveSubscriptionDetails, updateSubscriptionStatusHandler } from "../services/subscription.service.js";
 import Subscription from "../models/subscription.model.js";
 import Stripe from "stripe";
+
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
 const { send200, send401, send400 } = responseHelper,
     { createBusiness, updateBusiness, retriveBusiness } = businessService,
@@ -217,15 +219,6 @@ const businessSignup = [
                                 currentPeriodStart: { $lt: new Date() },
                                 currentPeriodEnd: { $gte: new Date() }
                             }).sort({ createdAt: 1 });
-
-                            // If no active subscription found, look for a valid special offer
-                            if (!subscription) {
-                                subscription = await Subscription.findOne({
-                                    userId: existingBusiness._id,
-                                    status: { $in: ['active', 'trialing', 'canceled', 'paused'] },
-                                    specialOfferExpiry: { $gt: new Date() }
-                                }).sort({ createdAt: 1 });
-                            }
 
                             let update_Business = await updateBusiness(
                                 {
@@ -538,14 +531,16 @@ const businessSignup = [
                                 fs.unlinkSync(filePath);
                             }
                         }
+                        let updateData = { logo: req?.file?.filename };
+                        // Only set nextStep-2 if themeColor was not previously set
+                        if (!existingBusiness.themeColor) {
+                            updateData.nextStep = 'step-2';
+                        }
                         let update_Business = await updateBusiness(
                             {
                                 _id: existingBusiness._id,
                             },
-                            {
-                                logo: req?.file?.filename,
-                                nextStep: 'step-2',
-                            }
+                            updateData
                         )
                         send200(res, {
                             status: true,
@@ -588,22 +583,22 @@ const businessSignup = [
                             data: null,
                         });
                     } else {
-                        await updateBusiness(
+                        // Only set nextStep-3 if keywords was not previously set
+                        let updateData = { themeColor: req.body.themeColor };
+                        // Set nextStep only if keywords array is empty or not present
+                        if (!Array.isArray(existingBusiness.keywords) || existingBusiness.keywords.length === 0) {
+                            updateData.nextStep = 'step-3';
+                        }
+                        const update_Business = await updateBusiness(
                             {
                                 _id: existingBusiness._id,
                             },
-                            {
-                                themeColor: req.body.themeColor,
-                                nextStep: 'step-3',
-                            }
+                            updateData
                         )
                         send200(res, {
                             status: true,
                             message: "Theme color has been updated successfully",
-                            data: {
-                                themeColor: req.body.themeColor,
-                                nextStep: 'step-3',
-                            },
+                            data: { themeColor: req.body.themeColor, nextStep: update_Business.nextStep },
                         });
                     }
                 } catch (err) {
@@ -673,19 +668,21 @@ const businessSignup = [
                                 data: existingBusiness.keywords,
                             });
                         }
+                        let updateData = { $addToSet: { keywords: { $each: newKeywords } } };
+                        // Only set nextStep-4 if services was not previously set
+                        if (!existingBusiness.services || existingBusiness.services.length === 0) {
+                            updateData.nextStep = 'step-4';
+                        }
                         const update_Business = await updateBusiness(
                             {
                                 _id: existingBusiness._id,
                             },
-                            {
-                                $addToSet: { keywords: { $each: newKeywords } },
-                                nextStep: 'step-4',
-                            }
+                            updateData
                         )
                         send200(res, {
                             status: true,
                             message: "Business keywords updated successfully",
-                            data: { keywords: update_Business.keywords, nextStep: 'step-4' },
+                            data: { keywords: update_Business.keywords, nextStep: update_Business.nextStep },
                         });
                     }
                 } catch (err) {
@@ -899,6 +896,7 @@ const businessSignup = [
                                 }
                             )
                         }
+
                         // First try to find an active subscription for today
                         let subscription = await Subscription.findOne({
                             userId: existingBusiness._id,
@@ -907,29 +905,61 @@ const businessSignup = [
                             currentPeriodEnd: { $gte: new Date() }
                         }).sort({ createdAt: 1 });
 
-                        // If no active subscription found, look for a valid special offer
-                        if (!subscription) {
-                            subscription = await Subscription.findOne({
-                                userId: existingBusiness._id,
-                                status: { $in: ['active', 'trialing', 'canceled', 'paused'] },
-                                specialOfferExpiry: { $gt: new Date() }
-                            }).sort({ createdAt: 1 });
-                        }
                         let updateResult = null;
                         if (subscription) {
-                            console.log(subscription.status, "subscription.status", req.body.subscriptionStatus);
-                            // check if subscription in canceled or it will be canceled at period end
-                            if (subscription.status === 'canceled') {
-                                responseMessage = "Business details updated successfully but subscription status cannot be updated for canceled subscriptions";
-                            } else if ((req.body.subscriptionStatus && req.body.subscriptionStatus !== subscription.status)
-                                || (subscription.status === 'active' && subscription.cancelAtPeriodEnd && req.body.subscriptionStatus === 'active')) {
-                                updateResult = await updateSubscriptionStatusHandler(subscription.stripeSubscriptionId, req.body.subscriptionStatus);
-                                responseMessage = "Business details and subscription status updated successfully";
+                            // Handle canceledImmediately status
+                            if (req.body.subscriptionStatus === 'canceledImmediately') {
+                                // Find all subscriptions for this user (both normal and special offers)
+                                const allSubscriptions = await Subscription.find({
+                                    userId: existingBusiness._id,
+                                    status: { $in: ['active', 'trialing', 'paused', 'canceled'] }
+                                });
+
+                                if (allSubscriptions.length > 0) {
+                                    // Cancel all subscriptions immediately
+                                    const cancelPromises = allSubscriptions.map(async (sub) => {
+                                        try {
+                                            // Only cancel in Stripe if it's not already a special offer subscription
+                                            if (sub.stripeSubscriptionId) {
+                                                await stripe.subscriptions.cancel(sub.stripeSubscriptionId);
+                                            }
+
+                                            // Update subscription status in database
+                                            await Subscription.findOneAndUpdate(
+                                                { _id: sub._id },
+                                                { status: 'canceled', currentPeriodEnd: new Date() }
+                                            );
+
+                                            return { subscriptionId: sub._id, status: 'canceled' };
+                                        } catch (error) {
+                                            console.error(`Error canceling subscription ${sub._id}:`, error);
+                                            return { subscriptionId: sub._id, status: 'error', error: error.message };
+                                        }
+                                    });
+
+                                    updateResult = await Promise.all(cancelPromises);
+                                    responseMessage = "Business details updated successfully and all subscriptions canceled immediately";
+                                } else {
+                                    responseMessage = "Business details updated successfully but no active subscriptions found to cancel";
+                                }
                             } else {
-                                responseMessage = "Business details updated successfully";
+                                // check if subscription in canceled or it will be canceled at period end
+                                if (subscription.status === 'canceled') {
+                                    responseMessage = "Business details updated successfully but subscription status cannot be updated for canceled subscriptions";
+                                } else if ((req.body.subscriptionStatus && req.body.subscriptionStatus !== subscription.status)
+                                    || (subscription.status === 'active' && subscription.cancelAtPeriodEnd && req.body.subscriptionStatus === 'active')) {
+                                    updateResult = await updateSubscriptionStatusHandler(subscription.stripeSubscriptionId, req.body.subscriptionStatus);
+                                    responseMessage = "Business details and subscription status updated successfully";
+                                } else {
+                                    responseMessage = "Business details updated successfully";
+                                }
                             }
                         } else {
-                            responseMessage = "Business details updated successfully but no active subscription found";
+                            if (req.body.subscriptionStatus === 'canceledImmediately') {
+                                responseMessage = "Business details updated successfully but no active subscriptions found to cancel";
+                            } else {
+                                responseMessage = "Business details updated successfully but no active subscription found";
+                            }
                         }
                         const update_Business = await updateBusiness(
                             {
@@ -1143,20 +1173,21 @@ const businessSignup = [
                                 data: existingBusiness.services,
                             });
                         }
-
+                        let updateData = { $addToSet: { services: { $each: newServices } }, };
+                        // Only set nextStep-5 if questions was not previously set
+                        if (!Array.isArray(existingBusiness.questions) || existingBusiness.questions.length === 0) {
+                            updateData.nextStep = 'step-5';
+                        }
                         const update_Business = await updateBusiness(
                             {
                                 _id: existingBusiness._id,
                             },
-                            {
-                                $addToSet: { services: { $each: newServices } },
-                                nextStep: 'step-5',
-                            }
+                            updateData
                         )
                         send200(res, {
                             status: true,
                             message: "Business services updated successfully",
-                            data: { services: update_Business.services, nextStep: 'step-5' },
+                            data: { services: update_Business.services, nextStep: update_Business.nextStep },
                         });
                     }
                 } catch (err) {
@@ -1450,18 +1481,21 @@ const businessSignup = [
                             });
                         }
 
+                        let updateData = { $addToSet: { questions: { $each: newQuestions } }, };
+                        // Only set nextStep-6 if email is not verified
+                        if (!existingBusiness.isEmailVerified) {
+                            updateData.nextStep = 'step-6';
+                        }
                         const update_Business = await updateBusiness(
                             {
                                 _id: existingBusiness._id,
                             },
-                            {
-                                $addToSet: { questions: { $each: newQuestions } }, nextStep: 'step-6'
-                            }
+                            updateData
                         )
                         send200(res, {
                             status: true,
                             message: "Business questions updated successfully",
-                            data: { questions: update_Business.questions, nextStep: 'step-6' },
+                            data: { questions: update_Business.questions, nextStep: update_Business.nextStep },
                         });
                     }
                 } catch (err) {

@@ -147,8 +147,19 @@ adminRouter.get('/list', isAdmin, async (req, res) => {
 adminRouter.post('/subscription/cancel', isAdmin, async (req, res) => {
     try {
         const { userId } = req.body;
+        
+        if (!userId) {
+            return res.status(400).json({ 
+                error: 'User ID is required' 
+            });
+        }
+
         const result = await cancelSubscriptionImmediately(userId);
-        res.json(result);
+        res.json({
+            ...result,
+            message: result.message,
+            subscriptionType: result.isSpecialOffer ? 'Special Offer' : 'Regular'
+        });
     } catch (error) {
         res.status(400).json({ error: error.message });
     }
@@ -156,8 +167,19 @@ adminRouter.post('/subscription/cancel', isAdmin, async (req, res) => {
 adminRouter.post('/subscription/pause', isAdmin, async (req, res) => {
     try {
         const { userId } = req.body;
+        
+        if (!userId) {
+            return res.status(400).json({ 
+                error: 'User ID is required' 
+            });
+        }
+
         const result = await pauseSubscription(userId);
-        res.json(result);
+        res.json({
+            ...result,
+            message: result.message,
+            subscriptionType: result.isSpecialOffer ? 'Special Offer' : 'Regular'
+        });
     } catch (error) {
         res.status(400).json({ error: error.message });
     }
@@ -165,8 +187,19 @@ adminRouter.post('/subscription/pause', isAdmin, async (req, res) => {
 adminRouter.post('/subscription/resume', isAdmin, async (req, res) => {
     try {
         const { userId } = req.body;
+        
+        if (!userId) {
+            return res.status(400).json({ 
+                error: 'User ID is required' 
+            });
+        }
+
         const result = await resumeSubscription(userId);
-        res.json(result);
+        res.json({
+            ...result,
+            message: result.message,
+            subscriptionType: result.isSpecialOffer ? 'Special Offer' : 'Regular'
+        });
     } catch (error) {
         res.status(400).json({ error: error.message });
     }

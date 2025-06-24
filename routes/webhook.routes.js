@@ -16,16 +16,6 @@ if (!endpointSecret || (!endpointSecret.startsWith('whsec_') && !endpointSecret.
 router.post('/', async (req, res) => {
     const sig = req.headers['stripe-signature'];
 
-    // Debug logging
-    console.log('Webhook received - Headers:', {
-        'stripe-signature': sig,
-        'content-type': req.headers['content-type'],
-        'content-length': req.headers['content-length']
-    });
-    console.log('Request body type:', typeof req.body);
-    console.log('Request body is Buffer:', Buffer.isBuffer(req.body));
-    console.log('Request body length:', req.body?.length);
-
     if (!sig) {
         console.error('No Stripe signature found in request headers');
         return res.status(400).send('No Stripe signature found');
@@ -51,12 +41,6 @@ router.post('/', async (req, res) => {
             console.error('Body constructor:', rawBody?.constructor?.name);
             return res.status(400).send('Invalid request body format');
         }
-
-        console.log('Attempting to construct event with:');
-        console.log('- Signature:', sig);
-        console.log('- Secret length:', endpointSecret?.length);
-        console.log('- Body length:', rawBody?.length);
-        console.log('- Secret prefix:', endpointSecret?.substring(0, 3));
 
         event = stripe.webhooks.constructEvent(rawBody, sig, endpointSecret);
         console.log('Event constructed successfully:', event.type);

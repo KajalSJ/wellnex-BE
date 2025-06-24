@@ -6,13 +6,44 @@ import businessService from './business.service.js';
 import currencyModel from '../models/currency.model.js';
 import path from 'path';
 import __dirname from "../configurations/dir.config.js";
-import config from "../configurations/app.config.js";
-import adminService from './admin.service.js';
+import stripeExternal from '../externals/stripe.external.js';
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 const { sendingMail } = awsEmailExternal,
-    { retriveBusiness } = businessService;
-const specialOfferPriceValue = 100;
+    { retriveBusiness } = businessService,
+    { retrieveCoupon } = stripeExternal;
+/**
+ * Utility function to check if a user has ever used a special offer
+ * @param {string} userId - The user ID to check
+ * @returns {Promise<boolean>} - True if user has used a special offer, false otherwise
+ */
+const hasUserUsedSpecialOffer = async (userId) => {
+    try {
+        // Check for any subscription with 'applied' status (current or historical)
+        const hasUsedSpecialOffer = await Subscription.exists({
+            userId,
+            specialOfferStatus: 'applied'
+        });
+
+        if (hasUsedSpecialOffer) {
+            return true;
+        }
+
+        // Additional check: Look for any historical special offer usage
+        const historicalSpecialOffer = await Subscription.findOne({
+            userId,
+            isSpecialOffer: true,
+            specialOfferStatus: 'applied'
+        }).sort({ createdAt: -1 });
+
+        return !!historicalSpecialOffer;
+    } catch (error) {
+        console.error('Error checking if user has used special offer:', error);
+        // In case of error, assume they have used it to be safe
+        return true;
+    }
+};
+
 export const createStripeCustomer = async (userId) => {
     try {
         const user = await Business.findById({ _id: userId });
@@ -317,48 +348,114 @@ export const setDefaultCard = async (userId, paymentMethodId) => {
 };
 
 export const checkSpecialOfferPrice = async (userId) => {
-    // Find the active subscription
-    const subscription = await Subscription.findOne({
-        userId,
-        status: { $in: ['active', 'trialing'] },
-        currentPeriodEnd: { $gte: new Date() },
-    });
+    try {
+        // Find the active subscription
+        const subscription = await Subscription.findOne({
+            userId,
+            status: { $in: ['active', 'trialing'] },
+            currentPeriodEnd: { $gte: new Date() },
+            isSpecialOffer: false // Only check regular subscriptions
+        });
 
-    if (!subscription) {
-        throw new Error('No active subscription found');
-    }
-    if (subscription.isSpecialOffer) {
+        if (!subscription) {
+            throw new Error('No active subscription found');
+        }
+
+        // Check if user already has a special offer subscription
+        const specialOfferSubscription = await Subscription.findOne({
+            userId,
+            isSpecialOffer: true,
+            specialOfferStatus: { $in: ['applied', 'declined'] },
+            specialOfferDiscountEnd: { $gte: new Date() }
+        });
+
+        if (specialOfferSubscription) {
+            return {
+                success: true,
+                message: 'Special offer already applied.',
+                hasSpecialOffer: true,
+                isSpecialOffer: specialOfferSubscription.isSpecialOffer,
+                specialOfferPrice: specialOfferSubscription.specialOfferPrice,
+                currentPeriodEnd: specialOfferSubscription.currentPeriodEnd,
+                specialOfferStatus: specialOfferSubscription.specialOfferStatus
+            };
+        }
+
+        // Check if user has already used a special offer (ONE-TIME ONLY)
+        // This is the key check - look for ANY subscription with 'applied' status for this user
+        const hasUsedSpecialOffer = await hasUserUsedSpecialOffer(userId);
+
+        if (hasUsedSpecialOffer) {
+            return {
+                success: true,
+                message: 'You have already used your one-time special offer. This offer cannot be provided again. Proceeding with cancellation.',
+                hasSpecialOffer: false,
+                specialOfferPrice: null,
+                currentPeriodEnd: subscription.currentPeriodEnd,
+                reason: 'already_used'
+            };
+        }
+
+        // Additional check: Look for any historical special offer usage
+        // This provides an extra layer of protection
+        const historicalSpecialOffer = await Subscription.findOne({
+            userId,
+            isSpecialOffer: true,
+            specialOfferStatus: 'applied'
+        }).sort({ createdAt: -1 });
+
+        if (historicalSpecialOffer) {
+            return {
+                success: true,
+                message: 'You have already used your one-time special offer in the past. This offer cannot be provided again. Proceeding with cancellation.',
+                hasSpecialOffer: false,
+                specialOfferPrice: null,
+                currentPeriodEnd: subscription.currentPeriodEnd,
+                reason: 'historical_usage'
+            };
+        }
+
+        // Update subscription to mark that offer has been presented
+        subscription.specialOfferStatus = 'offered';
+        await subscription.save();
+        const couponId = process.env.STRIPE_COUPON_KEY;
+        const coupon = await retrieveCoupon(couponId);
+        if (!coupon || coupon.status === 404 || coupon.error) {
+            throw new Error('Special offer coupon not found or invalid');
+        }
+
+        // Store discount details for reference
+        subscription.specialOfferCouponId = couponId;
+        subscription.specialOfferDiscountPercent = coupon?.percent_off ? coupon.percent_off : null;
+        subscription.specialOfferDiscountAmount = coupon?.amount_off ? coupon.amount_off : null;
+        subscription.specialOfferDiscountDescription = coupon?.name ? coupon.name : null;
+        await subscription.save();
+        // Compose message and price info
+        let offerMessage = '';
+        let offerValue = null;
+        if (coupon?.percent_off) {
+            offerMessage = `We understand that businesses have ups and downs. We'd like to offer you a special discount of ${coupon.percent_off}% for the next billing period to help you through this period. This is a one-time offer - press the button below to apply it.`;
+            offerValue = coupon.percent_off + '% off';
+        } else if (coupon?.amount_off) {
+            offerMessage = `We understand that businesses have ups and downs. We'd like to offer you a special rate of $${(coupon.amount_off / 100).toFixed(2)} off for the next billing period to help you through this period. This is a one-time offer - press the button below to apply it.`;
+            offerValue = '$' + (coupon.amount_off / 100).toFixed(2) + ' off';
+        } else {
+            offerMessage = `We'd like to offer you a special discount for the next billing period. This is a one-time offer - press the button below to apply it.`;
+        }
+        // Return special offer
         return {
             success: true,
-            message: 'Special offer already applied.',
+            message: offerMessage,
             hasSpecialOffer: true,
-            isSpecialOffer: subscription.isSpecialOffer,
-            specialOfferPrice: subscription.specialOfferPrice,
-            currentPeriodEnd: subscription.currentPeriodEnd
+            specialOfferPrice: offerValue,
+            currentPeriodEnd: subscription.currentPeriodEnd,
+            specialOfferStatus: 'offered',
+            isOneTimeOffer: true
         };
+    } catch (error) {
+        console.error('Error checking special offer:', error);
+        throw new Error(`Error checking special offer: ${error.message}`);
     }
-    if (subscription.hasReceivedSpecialOffer && subscription.specialOfferApplied) {
-        return {
-            success: true,
-            message: 'Special offer already applied. We are proceeding to cancel the subscription.',
-            hasSpecialOffer: false,
-            specialOfferPrice: null,
-            currentPeriodEnd: subscription.currentPeriodEnd
-        };
-    }
-    // Update subscription to mark that offer has been presented
-    subscription.hasReceivedSpecialOffer = true;
-    await subscription.save();
-
-    // Return special offer instead of canceling
-    return {
-        success: true,
-        message: `We understand that businesses have ups and downs. We\'d like to offer you a special rate of $${specialOfferPriceValue} for the next month to help you through this period. Press the button below to apply the offer.`,
-        hasSpecialOffer: true,
-        specialOfferPrice: specialOfferPriceValue,
-        currentPeriodEnd: subscription.currentPeriodEnd
-    };
-
 };
 
 export const cancelSubscription = async (userId) => {
@@ -448,6 +545,7 @@ export const cancelSubscription = async (userId) => {
         throw new Error(`Error canceling subscription: ${error.message}`);
     }
 };
+
 export const cancelSubscriptionImmediately = async (userId) => {
     try {
         const subscription = await Subscription.findOne({
@@ -457,26 +555,51 @@ export const cancelSubscriptionImmediately = async (userId) => {
                 { status: 'canceled', currentPeriodEnd: { $gte: new Date() } }
             ],
         });
+
         if (!subscription) {
-            throw new Error('No subscription found');
+            throw new Error('No subscription found to cancel');
         }
-        await stripe.subscriptions.cancel(
-            subscription.stripeSubscriptionId,
-        );
-        await Subscription.findOneAndUpdate(
-            { stripeSubscriptionId: subscription.stripeSubscriptionId },
-            { status: 'canceled' }
-        );
-        return {
-            success: true,
-            message: 'Subscription will be canceled immediately',
-            cancelAtPeriodEnd: false,
-        };
+
+        // Handle special offer subscriptions differently
+        if (subscription.isSpecialOffer) {
+            // For special offer subscriptions, we update the status directly
+            await Subscription.findOneAndUpdate(
+                { _id: subscription._id },
+                {
+                    status: 'canceled',
+                    specialOfferStatus: 'expired'
+                }
+            );
+
+            return {
+                success: true,
+                message: 'Special offer subscription canceled immediately',
+                cancelAtPeriodEnd: false,
+                isSpecialOffer: true
+            };
+        } else {
+            // For regular subscriptions, use Stripe API
+            await stripe.subscriptions.cancel(
+                subscription.stripeSubscriptionId,
+            );
+            await Subscription.findOneAndUpdate(
+                { stripeSubscriptionId: subscription.stripeSubscriptionId },
+                { status: 'canceled' }
+            );
+
+            return {
+                success: true,
+                message: 'Regular subscription canceled immediately',
+                cancelAtPeriodEnd: false,
+                isSpecialOffer: false
+            };
+        }
     } catch (error) {
         console.error('Error canceling subscription:', error);
         throw new Error(`Error canceling subscription: ${error.message}`);
     }
 };
+
 export const pauseSubscription = async (userId) => {
     try {
         const subscription = await Subscription.findOne({
@@ -484,217 +607,203 @@ export const pauseSubscription = async (userId) => {
             $or: [
                 { status: { $in: ['active', 'trialing'] } },
                 { status: 'canceled', currentPeriodEnd: { $gte: new Date() } }
-            ],
-            isSpecialOffer: false,
+            ]
         });
+
         if (!subscription) {
-            throw new Error('No subscription found');
+            throw new Error('No active subscription found to pause');
         }
-        await stripe.subscriptions.update(
-            subscription.stripeSubscriptionId,
-            { pause_collection: { behavior: 'mark_uncollectible' } }
-        );
-        await Subscription.findOneAndUpdate(
-            { stripeSubscriptionId: subscription.stripeSubscriptionId },
-            { status: 'paused' }
-        );
-        return {
-            success: true,
-            message: 'Subscription will be paused',
-            pauseCollection: { behavior: 'mark_uncollectible' },
-        };
+
+        // Handle special offer subscriptions differently
+        if (subscription.isSpecialOffer) {
+            // For special offer subscriptions, we update the status directly
+            await Subscription.findOneAndUpdate(
+                { _id: subscription._id },
+                { status: 'paused' }
+            );
+
+            return {
+                success: true,
+                message: 'Special offer subscription paused successfully',
+                pauseCollection: { behavior: 'mark_uncollectible' },
+                isSpecialOffer: true
+            };
+        } else {
+            // For regular subscriptions, use Stripe API
+            await stripe.subscriptions.update(
+                subscription.stripeSubscriptionId,
+                { pause_collection: { behavior: 'mark_uncollectible' } }
+            );
+            await Subscription.findOneAndUpdate(
+                { stripeSubscriptionId: subscription.stripeSubscriptionId },
+                { status: 'paused' }
+            );
+
+            return {
+                success: true,
+                message: 'Regular subscription paused successfully',
+                pauseCollection: { behavior: 'mark_uncollectible' },
+                isSpecialOffer: false
+            };
+        }
     } catch (error) {
         console.error('Error pausing subscription:', error);
         throw new Error(`Error pausing subscription: ${error.message}`);
     }
 };
+
 export const resumeSubscription = async (userId) => {
     try {
         const subscription = await Subscription.findOne({
             userId,
-            status: { $in: ['canceled', 'paused'] },
-            isSpecialOffer: false,
+            status: { $in: ['canceled', 'paused'] }
         });
+
         if (!subscription) {
-            throw new Error('No subscription found');
+            throw new Error('No paused or canceled subscription found to resume');
         }
-        await stripe.subscriptions.update(
-            subscription.stripeSubscriptionId,
-            { pause_collection: null }
-        );
-        await Subscription.findOneAndUpdate(
-            { stripeSubscriptionId: subscription.stripeSubscriptionId },
-            { status: 'active' }
-        );
-        return {
-            success: true,
-            message: 'Subscription will be resumed',
-            pauseCollection: null,
-        };
+
+        // Handle special offer subscriptions differently
+        if (subscription.isSpecialOffer) {
+            // For special offer subscriptions, we update the status directly
+            await Subscription.findOneAndUpdate(
+                { _id: subscription._id },
+                { status: 'active' }
+            );
+
+            return {
+                success: true,
+                message: 'Special offer subscription resumed successfully',
+                pauseCollection: null,
+                isSpecialOffer: true
+            };
+        } else {
+            // For regular subscriptions, use Stripe API
+            await stripe.subscriptions.update(
+                subscription.stripeSubscriptionId,
+                { pause_collection: null }
+            );
+            await Subscription.findOneAndUpdate(
+                { stripeSubscriptionId: subscription.stripeSubscriptionId },
+                { status: 'active' }
+            );
+
+            return {
+                success: true,
+                message: 'Regular subscription resumed successfully',
+                pauseCollection: null,
+                isSpecialOffer: false
+            };
+        }
     } catch (error) {
         console.error('Error resuming subscription:', error);
         throw new Error(`Error resuming subscription: ${error.message}`);
     }
 };
+
 export const applySpecialOffer = async (userId) => {
     try {
         const subscription = await Subscription.findOne({
             userId,
-            status: { $in: ['active', 'trialing'] }
+            status: { $in: ['active', 'trialing'] },
+            isSpecialOffer: false
         });
 
         if (!subscription) {
             throw new Error('No active subscription found');
         }
 
-        if (!subscription.hasReceivedSpecialOffer) {
-            throw new Error('No special offer available');
+        if (subscription.specialOfferStatus !== 'offered') {
+            throw new Error('No special offer available or offer already processed');
         }
 
-        if (subscription.specialOfferApplied) {
-            throw new Error('Special offer already applied');
+        // Check if user has already used a special offer (ONE-TIME ONLY)
+        const hasUsedSpecialOffer = await hasUserUsedSpecialOffer(userId);
+        if (hasUsedSpecialOffer) {
+            throw new Error('You have already used your one-time special offer. This offer cannot be provided again.');
         }
 
-        // Calculate the next month's date
-        const nextMonth = new Date();
-        nextMonth.setMonth(nextMonth.getMonth() + 1);
-
-        // First, cancel the current subscription
+        // Apply 50% off coupon to the existing Stripe subscription for one month
+        // Replace 'g8MlViwG' with your actual coupon ID from Stripe
+        const couponId = process.env.STRIPE_COUPON_KEY;
         const stripeSubscription = await stripe.subscriptions.update(
             subscription.stripeSubscriptionId,
-            { cancel_at_period_end: true }
+            {
+                coupon: couponId // This applies the coupon for the next invoice
+            }
         );
 
-        // Create a new product for the special offer
-        const newProduct = await stripe.products.create({
-            name: `Special Offer - $${specialOfferPriceValue} Monthly`,
-            description: `Special one-month offer at $${specialOfferPriceValue}`,
-            active: true
-        });
+        // Save the discount period (for the NEXT billing period)
+        const discountStart = new Date(subscription.currentPeriodEnd);
+        const discountEnd = new Date(discountStart);
+        const planInterval = stripeSubscription && stripeSubscription.plan && stripeSubscription.plan.interval ? stripeSubscription.plan.interval : null;
+        if (planInterval) {
+            if (planInterval === 'month') {
+                discountEnd.setMonth(discountEnd.getMonth() + 1);
+            } else if (planInterval === 'year') {
+                discountEnd.setFullYear(discountEnd.getFullYear() + 1);
+            } else if (planInterval === 'week') {
+                discountEnd.setDate(discountEnd.getDate() + 7);
+            } else if (planInterval === 'day') {
+                discountEnd.setDate(discountEnd.getDate() + 1);
+            }
+        } else {
+            // Default to 1 month if interval is missing
+            discountEnd.setMonth(discountEnd.getMonth() + 1);
+        }
+        subscription.specialOfferDiscountStart = discountStart;
+        subscription.specialOfferDiscountEnd = discountEnd;
+        subscription.specialOfferStatus = 'applied';
+        subscription.specialOfferDiscountAppliedAt = new Date();
 
-        // Create a new price for the special offer
-        const newPrice = await stripe.prices.create({
-            unit_amount: specialOfferPriceValue * 100, // amount in cents
-            currency: 'usd',
-            product: newProduct.id,
-            active: true
-        });
+        // Store discount details for reference
+        subscription.specialOfferCouponId = couponId;
+        subscription.specialOfferDiscountPercent = stripeSubscription?.discount?.coupon?.percent_off ? stripeSubscription.discount.coupon.percent_off : null; // 50% off
+        subscription.specialOfferDiscountAmount = stripeSubscription?.discount?.coupon?.amount_off ? stripeSubscription.discount.coupon.amount_off : null; // Set to a fixed amount if using amount_off coupons
+        subscription.specialOfferDiscountDescription = stripeSubscription?.discount?.coupon?.name ? stripeSubscription.discount.coupon.name : null;
+        await subscription.save();
 
-        // Get payment method details to check for duplicates
-        const paymentMethod = await stripe.paymentMethods.retrieve(subscription.paymentMethodId);
-        // Verify payment method belongs to the customer
-        if (paymentMethod.customer !== subscription.stripeCustomerId) {
-            throw new Error('Payment method does not belong to this customer');
+        // Get user details for personalized email
+        const user = await Business.findById(userId);
+        if (!user) {
+            throw new Error('User not found');
         }
 
-        // Instead of checking status, let's try to use the payment method directly
-        try {
-            // Create a payment intent for the discounted month
-            const paymentIntent = await stripe.paymentIntents.create({
-                amount: specialOfferPriceValue * 100, // amount in cents
-                currency: 'usd',
-                customer: subscription.stripeCustomerId,
-                payment_method: paymentMethod.id,
-                confirm: true,
-                off_session: true,
-                metadata: {
-                    userId: userId.toString(),
-                    type: 'special_offer',
-                    expiryDate: nextMonth.toISOString()
-                }
-            });
+        // Format dates
+        const createdDate = new Date().toLocaleDateString('en-US', {
+            year: 'numeric',
+            month: 'long',
+            day: 'numeric',
+            hour: '2-digit',
+            minute: '2-digit'
+        });
 
-            // Verify payment was successful
-            if (paymentIntent.status !== 'succeeded') {
-                throw new Error(`Payment failed with status: ${paymentIntent.status}`);
-            }
+        // Send confirmation email
+        await sendingMail({
+            email: user.email,
+            sub: `Your Discounted Month is Confirmed – 50% Off Applied`,
+            text: `Hi ${user.name},\n\nThank you for staying with WellnexAI!\n\nWe've applied your 50% discount for the next month.\n\nCreated: ${createdDate}\n\nAfter that, your subscription will return to the regular price automatically.\n\nYou can update or cancel your subscription anytime from your Dashboard.\n\n– Thanks for growing with us,\nThe WellnexAI Team`,
+            html: `
+                <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+                    <h2 style="color: #333;">Your Discounted Month is Confirmed – 50% Off Applied</h2>
+                    <p>Hi ${user.name},</p>
+                    <p>Thank you for staying with WellnexAI!</p>
+                    <p>We've applied your 50% discount for the next month.</p>
+                    <div style="background-color: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0;">
+                        <p style="margin: 5px 0;"><strong>Created:</strong> ${createdDate}</p>
+                        <p style="margin: 5px 0;"><strong>Discount:</strong> 50% off</p>
+                    </div> 
+                    <p>To continue enjoying our services, your subscription will return to the regular price after the discounted month.</p>
+                    <p>– Thanks for growing with us,<br>The WellnexAI Team</p>
+                </div>
+            `
+        });
 
-            // Update the current subscription to mark it as canceled
-            subscription.status = stripeSubscription.status;
-            subscription.cancelAtPeriodEnd = true;
-            // subscription.specialOfferApplied = true;
-            // subscription.specialOfferPrice = specialOfferPriceValue;
-            // subscription.specialOfferExpiry = nextMonth;
-            await subscription.save();
-
-            // Calculate start and end dates for special offer
-            const specialOfferStartDate = new Date(subscription.currentPeriodEnd);
-            const specialOfferEndDate = new Date(specialOfferStartDate);
-            specialOfferEndDate.setMonth(specialOfferEndDate.getMonth() + 1);
-
-            // Create a new subscription record for the special offer period
-            const specialOfferSubscription = {
-                userId,
-                stripeSubscriptionId: `special_${Date.now()}`, // Custom ID for special offer
-                stripeCustomerId: subscription.stripeCustomerId,
-                paymentMethodId: subscription.paymentMethodId,
-                status: 'active',
-                priceId: newPrice.id,
-                amount: specialOfferPriceValue,
-                currentPeriodStart: specialOfferStartDate,
-                currentPeriodEnd: specialOfferEndDate,
-                isSpecialOffer: true,
-                specialOfferPrice: specialOfferPriceValue,
-                specialOfferExpiry: specialOfferEndDate
-            };
-
-            await Subscription.create(specialOfferSubscription);
-
-            // Get user details for personalized email
-            const user = await Business.findById(userId);
-            if (!user) {
-                throw new Error('User not found');
-            }
-
-            // Format dates
-            const createdDate = new Date().toLocaleDateString('en-US', {
-                year: 'numeric',
-                month: 'long',
-                day: 'numeric',
-                hour: '2-digit',
-                minute: '2-digit'
-            });
-
-            const updateDate = nextMonth.toLocaleDateString('en-US', {
-                year: 'numeric',
-                month: 'long',
-                day: 'numeric'
-            });
-
-            // Send confirmation email
-            await sendingMail({
-                email: user.email,
-                sub: `Your Discounted Month is Confirmed – ${specialOfferSubscription.amount} Applied`,
-                text: `Hi ${user.name},\n\nThank you for staying with WellnexAI!\n\nWe've applied your ${specialOfferSubscription.amount} discounted plan for the next month.\n\nCreated: ${createdDate}\n\nAfter that, your subscription will return to £199/month automatically.\n\nYou can update or cancel your subscription anytime from your Dashboard.\n\n– Thanks for growing with us,\nThe WellnexAI Team`,
-                html: `
-                    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-                        <h2 style="color: #333;">Your Discounted Month is Confirmed – ${specialOfferSubscription.amount} Applied</h2>
-                        <p>Hi ${user.name},</p>
-                        <p>Thank you for staying with WellnexAI!</p>
-                        <p>We've applied your ${specialOfferSubscription.amount} discounted plan for the next month.</p>
-                        <div style="background-color: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0;">
-                            <p style="margin: 5px 0;"><strong>Created:</strong> ${createdDate}</p>
-                            <p style="margin: 5px 0;"><strong>Start Date:</strong> ${specialOfferSubscription.currentPeriodStart}</p>
-                            <p style="margin: 5px 0;"><strong>End Date:</strong> ${specialOfferSubscription.currentPeriodEnd}</p>
-                         </div> 
-                        <p>To continue enjoying our services, please renew your subscription after the offer expires through your <a href="https://wellnexai.com/dashboard" style="color: #007bff; text-decoration: none;">dashboard</a>.</p>
-                        <p>– Thanks for growing with us,<br>The WellnexAI Team</p>
-                    </div>
-                `
-            });
-
-            return {
-                success: true,
-                message: 'Special offer has been applied. Your subscription will continue until ' + nextMonth.toLocaleDateString(),
-                specialOfferPrice: specialOfferPriceValue,
-                specialOfferExpiry: specialOfferEndDate,
-                clientSecret: paymentIntent.client_secret,
-                requiresAction: paymentIntent.status === 'requires_action'
-            };
-        } catch (error) {
-            console.error('Error applying special offer:', error);
-            throw new Error(`Error applying special offer: ${error.message}`);
-        }
+        return {
+            success: true,
+            message: 'Special offer has been applied successfully. Your subscription will be billed at 50% off for the next month.',
+            specialOfferStatus: 'applied',
+        };
     } catch (error) {
         console.error('Error applying special offer:', error);
         throw new Error(`Error applying special offer: ${error.message}`);
@@ -703,35 +812,74 @@ export const applySpecialOffer = async (userId) => {
 
 export const getActiveSubscription = async (userId) => {
     try {
+        // First check for any active subscription (regular or special offer)
         const subscription = await Subscription.findOne({
             userId,
-            status: { $in: ['active', 'trialing', 'canceled'] },
+            status: { $in: ['active', 'trialing'] },
             currentPeriodEnd: { $gte: new Date() }
         });
+
         let existingBusiness = await retriveBusiness({
             _id: userId,
         });
+
         if (!existingBusiness) {
             throw new Error('Business not found');
         }
+
         if (subscription) {
-            return { ...subscription._doc, email: existingBusiness.email };
+            // Return subscription with additional context
+            return {
+                ...subscription._doc,
+                email: existingBusiness.email,
+                hasActiveSubscription: true,
+                canAccessDashboard: subscription.status === 'active' || subscription.status === 'trialing',
+                subscriptionType: subscription.isSpecialOffer ? 'Special Offer' : 'Regular'
+            };
         } else {
+            // Check for paused subscriptions
             const subscriptionPaused = await Subscription.findOne({
                 userId,
                 status: { $in: ['paused'] },
             });
+
             if (subscriptionPaused) {
                 return {
                     status: false,
-                    message: "Your subscription is paused. Please contact admin.",
+                    message: "Your subscription is paused. Please contact admin to resume access.",
                     data: null,
+                    hasActiveSubscription: false,
+                    canAccessDashboard: false,
+                    subscriptionType: subscriptionPaused.isSpecialOffer ? 'Special Offer' : 'Regular'
                 };
             }
+
+            // Check for canceled subscriptions
+            const subscriptionCanceled = await Subscription.findOne({
+                userId,
+                status: { $in: ['canceled'] },
+                currentPeriodEnd: { $gte: new Date() }
+            });
+
+            if (subscriptionCanceled) {
+                return {
+                    status: false,
+                    message: "Your subscription has been canceled. Please contact admin to restore access.",
+                    data: null,
+                    hasActiveSubscription: false,
+                    canAccessDashboard: false,
+                    subscriptionType: subscriptionCanceled.isSpecialOffer ? 'Special Offer' : 'Regular'
+                };
+            }
+
+            // No subscription found
             return {
                 status: false,
                 message: "No active subscription found",
                 data: null,
+                hasActiveSubscription: false,
+                canAccessDashboard: false,
+                subscriptionType: null
             };
         }
     } catch (error) {
@@ -741,51 +889,47 @@ export const getActiveSubscription = async (userId) => {
 
 export const handleWebhookEvent = async (event) => {
     try {
-        console.log(`Processing webhook event: ${event.type}`);
 
         switch (event.type) {
             case 'customer.subscription.created':
                 const subscriptionCreated = event.data.object;
+                const createdUpdateData = {
+                    status: subscriptionCreated.status,
+                    cancelAtPeriodEnd: subscriptionCreated.cancel_at_period_end,
+                    priceId: subscriptionCreated.items.data[0].price.id
+                };
+                if (typeof subscriptionCreated.current_period_start === 'number') {
+                    createdUpdateData.currentPeriodStart = new Date(subscriptionCreated.current_period_start * 1000);
+                }
+                if (typeof subscriptionCreated.current_period_end === 'number') {
+                    createdUpdateData.currentPeriodEnd = new Date(subscriptionCreated.current_period_end * 1000);
+                }
                 await Subscription.findOneAndUpdate(
                     { stripeSubscriptionId: subscriptionCreated.id },
-                    {
-                        status: subscriptionCreated.status,
-                        currentPeriodStart: new Date(subscriptionCreated.current_period_start * 1000),
-                        currentPeriodEnd: new Date(subscriptionCreated.current_period_end * 1000),
-                        cancelAtPeriodEnd: subscriptionCreated.cancel_at_period_end,
-                        priceId: subscriptionCreated.items.data[0].price.id
-                    },
+                    createdUpdateData,
                     { upsert: true, new: true }
                 );
-                console.log(`Subscription created: ${subscriptionCreated.id}`);
                 break;
 
             case 'customer.subscription.updated':
                 const subscriptionUpdated = event.data.object;
-                if (subscriptionUpdated.pause_collection) {
-                    // mark user paused
-                    await Subscription.findOneAndUpdate(
-                        { stripeSubscriptionId: subscriptionUpdated.id },
-                        {
-                            status: 'paused',
-                            currentPeriodStart: new Date(subscriptionUpdated.current_period_start * 1000),
-                            currentPeriodEnd: new Date(subscriptionUpdated.current_period_end * 1000),
-                            cancelAtPeriodEnd: subscriptionUpdated.cancel_at_period_end
-                        }
-                    );
-                } else {
-                    // mark user active
-                    await Subscription.findOneAndUpdate(
-                        { stripeSubscriptionId: subscriptionUpdated.id },
-                        {
-                            status: subscriptionUpdated.status,
-                            currentPeriodStart: new Date(subscriptionUpdated.current_period_start * 1000),
-                            currentPeriodEnd: new Date(subscriptionUpdated.current_period_end * 1000),
-                            cancelAtPeriodEnd: subscriptionUpdated.cancel_at_period_end
-                        }
-                    );
+                const updatedUpdateData = {
+                    status: subscriptionUpdated.status,
+                    cancelAtPeriodEnd: subscriptionUpdated.cancel_at_period_end
+                };
+                if (typeof subscriptionUpdated.current_period_start === 'number') {
+                    updatedUpdateData.currentPeriodStart = new Date(subscriptionUpdated.current_period_start * 1000);
                 }
-                console.log(`Subscription updated: ${subscriptionUpdated.id}`);
+                if (typeof subscriptionUpdated.current_period_end === 'number') {
+                    updatedUpdateData.currentPeriodEnd = new Date(subscriptionUpdated.current_period_end * 1000);
+                }
+                if (subscriptionUpdated.pause_collection) {
+                    updatedUpdateData.status = 'paused';
+                }
+                await Subscription.findOneAndUpdate(
+                    { stripeSubscriptionId: subscriptionUpdated.id },
+                    updatedUpdateData
+                );
                 break;
 
             case 'customer.subscription.deleted':
@@ -799,21 +943,49 @@ export const handleWebhookEvent = async (event) => {
                         cancelAtPeriodEnd: subscription.cancel_at_period_end
                     }
                 );
-                console.log(`Subscription deleted: ${subscription.id}`);
                 break;
 
             case 'invoice.payment_succeeded':
                 const invoiceSucceeded = event.data.object;
                 if (invoiceSucceeded.subscription) {
-                    await Subscription.findOneAndUpdate(
+                    const subscriptionDoc = await Subscription.findOneAndUpdate(
                         { stripeSubscriptionId: invoiceSucceeded.subscription },
                         {
                             status: 'active',
                             lastPaymentDate: new Date()
-                        }
+                        },
+                        { new: true }
                     );
+
+                    // If this is a special offer subscription that's expiring, send notification
+                    if (subscriptionDoc && subscriptionDoc.isSpecialOffer &&
+                        subscriptionDoc.specialOfferDiscountEnd &&
+                        subscriptionDoc.specialOfferDiscountEnd <= new Date()) {
+
+                        // Mark special offer as expired
+                        subscriptionDoc.specialOfferStatus = 'expired';
+                        await subscriptionDoc.save();
+
+                        // Send expiry notification
+                        const business = await Business.findById(subscriptionDoc.userId);
+                        if (business) {
+                            await sendingMail({
+                                email: business.email,
+                                sub: 'Your WellnexAI Special Offer Has Expired',
+                                text: `Hi ${business.name},\n\nYour special offer subscription has expired. To continue enjoying our services, please renew your subscription through your dashboard.\n\nThank you for being a valued customer.\n\n– The WellnexAI Team`,
+                                html: `
+                                    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+                                        <h2 style="color: #333;">Your WellnexAI Special Offer Has Expired</h2>
+                                        <p>Hi ${business.name},</p>
+                                        <p>Your special offer subscription has expired. To continue enjoying our services, please renew your subscription through your <a href="https://wellnexai.com/dashboard" style="color: #007bff; text-decoration: none;">dashboard</a>.</p>
+                                        <p>Thank you for being a valued customer.</p>
+                                        <p>– The WellnexAI Team</p>
+                                    </div>
+                                `
+                            });
+                        }
+                    }
                 }
-                console.log(`Payment succeeded for invoice: ${invoiceSucceeded.id}`);
                 break;
 
             case 'invoice.payment_failed':
@@ -827,12 +999,9 @@ export const handleWebhookEvent = async (event) => {
                         }
                     );
                 }
-                console.log(`Payment failed for invoice: ${invoiceFailed.id}`);
                 break;
 
             case 'customer.subscription.trial_will_end':
-                const trialEnding = event.data.object;
-                console.log(`Trial ending for subscription: ${trialEnding.id}`);
                 // You can add email notification logic here
                 break;
 
@@ -842,7 +1011,6 @@ export const handleWebhookEvent = async (event) => {
                     { stripeSubscriptionId: subscriptionPaused.id },
                     { status: 'paused' }
                 );
-                console.log(`Subscription paused: ${subscriptionPaused.id}`);
                 break;
 
             case 'customer.subscription.resumed':
@@ -851,7 +1019,6 @@ export const handleWebhookEvent = async (event) => {
                     { stripeSubscriptionId: subscriptionResumed.id },
                     { status: 'active' }
                 );
-                console.log(`Subscription resumed: ${subscriptionResumed.id}`);
                 break;
 
             default:
@@ -907,7 +1074,7 @@ export const getSubscriptionPlans = async (userId) => {
         // Fetch all active prices with their associated products
         const prices = await stripe.prices.list({
             active: true,
-            product: 'prod_SMGEcS5lrtPGbw',
+            product: process.env.USER_PRODUCT_STRIPE_KEY,
             expand: ['data.product'],
             type: 'recurring'
         });
@@ -970,14 +1137,19 @@ export const renewSubscriptionAfterSpecialOffer = async (userId, paymentMethodId
             throw new Error('Business not found');
         }
 
+        // Find the special offer subscription that has expired or is about to expire
         const specialOfferSubscription = await Subscription.findOne({
             userId,
             isSpecialOffer: true,
+            specialOfferStatus: { $in: ['applied', 'expired'] },
             $or: [
-                { specialOfferExpiry: { $lte: new Date() } }, // Expiring or expired special offer
-                { currentPeriodEnd: { $lte: new Date() } }    // Expiring or expired subscription
+                { currentPeriodEnd: { $lte: new Date() } }    // Expired subscription
             ]
         });
+
+        if (!specialOfferSubscription) {
+            throw new Error('No expired special offer subscription found for renewal');
+        }
 
         // Get the original subscription to get the original price
         const originalSubscription = await Subscription.findOne({
@@ -995,8 +1167,8 @@ export const renewSubscriptionAfterSpecialOffer = async (userId, paymentMethodId
             ]
         }).sort({ createdAt: -1 });
 
-        if (!originalSubscription && !specialOfferSubscription) {
-            throw new Error('No eligible subscription found for renewal');
+        if (!originalSubscription) {
+            throw new Error('No original subscription found for renewal');
         }
 
         // Get the price from Stripe to verify currency
@@ -1152,7 +1324,8 @@ export const renewSubscriptionAfterSpecialOffer = async (userId, paymentMethodId
                 confirm: true,
                 metadata: {
                     subscriptionId: subscription.id,
-                    userId: userId.toString()
+                    userId: userId.toString(),
+                    type: 'renewal_after_special_offer'
                 }
             });
             clientSecret = paymentIntent.client_secret;
@@ -1164,54 +1337,77 @@ export const renewSubscriptionAfterSpecialOffer = async (userId, paymentMethodId
         // Save subscription details to database
         const subscriptionData = {
             userId,
+            stripeCustomerId: customer.id,
             stripeSubscriptionId: subscription.id,
-            stripeCustomerId: business.stripeCustomerId,
-            paymentMethodId: finalPaymentMethodId,
             status: subscription.status,
             priceId: originalSubscription.priceId,
-            amount: price.unit_amount / 100,
             currentPeriodStart: new Date(subscription.current_period_start * 1000),
             currentPeriodEnd: new Date(subscription.current_period_end * 1000),
+            cancelAtPeriodEnd: subscription.cancel_at_period_end,
+            amount: price.unit_amount / 100,
+            currency: price.currency,
+            paymentMethodId: finalPaymentMethodId,
+            isSpecialOffer: false,
+            specialOfferStatus: 'none'
         };
 
-        await Subscription.create(subscriptionData);
+        const newSubscription = await Subscription.create(subscriptionData);
 
-        // Send payment confirmation email
-        const today = new Date().toLocaleDateString('en-US', {
+        // Mark the special offer subscription as expired
+        specialOfferSubscription.specialOfferStatus = 'expired';
+        await specialOfferSubscription.save();
+
+        // Get user details for personalized email
+        const user = await Business.findById(userId);
+        if (!user) {
+            throw new Error('User not found');
+        }
+
+        // Format dates
+        const startDate = new Date(subscription.current_period_start * 1000).toLocaleDateString('en-US', {
             year: 'numeric',
             month: 'long',
             day: 'numeric'
         });
 
+        const endDate = new Date(subscription.current_period_end * 1000).toLocaleDateString('en-US', {
+            year: 'numeric',
+            month: 'long',
+            day: 'numeric'
+        });
+
+        // Send confirmation email
         await sendingMail({
-            email: business.email,
-            sub: "Your WellnexAI Subscription Has Been Renewed",
-            text: `Hi ${business.name},\n\nThis is a confirmation that your payment of ${price.unit_amount / 100} ${price.currency.toUpperCase()} has been processed successfully.\n\nPlan: Monthly Subscription\nAmount: ${price.unit_amount / 100} ${price.currency.toUpperCase()}\nDate: ${today}\n\nYou can view or manage your billing at any time via your Dashboard.\n\nQuestions? Email support@wellnexai.com\n\nThanks for being part of the WellnexAI community!`,
+            email: user.email,
+            sub: 'Your WellnexAI Subscription Has Been Renewed',
+            text: `Hi ${user.name},\n\nGreat news! Your WellnexAI subscription has been successfully renewed.\n\nSubscription Details:\n- Start Date: ${startDate}\n- End Date: ${endDate}\n- Amount: $${price.unit_amount / 100} ${price.currency.toUpperCase()}\n- Status: Active\n\nThank you for continuing with WellnexAI!\n\n– The WellnexAI Team`,
             html: `
                 <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-                    <h2 style="color: #333;">WellnexAI Payment Receipt – ${today}</h2>
-                    <p>Hi ${business.name},</p>
-                    <p>This is a confirmation that your payment of <strong>${price.unit_amount / 100} ${price.currency.toUpperCase()}</strong> has been processed successfully.</p>
+                    <h2 style="color: #333;">Your WellnexAI Subscription Has Been Renewed</h2>
+                    <p>Hi ${user.name},</p>
+                    <p>Great news! Your WellnexAI subscription has been successfully renewed.</p>
                     <div style="background-color: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0;">
-                        <p style="margin: 5px 0;"><strong>Plan:</strong> Monthly Subscription</p>
-                        <p style="margin: 5px 0;"><strong>Amount:</strong> ${price.unit_amount / 100} ${price.currency.toUpperCase()}</p>
-                        <p style="margin: 5px 0;"><strong>Date:</strong> ${today}</p>
+                        <p style="margin: 5px 0;"><strong>Start Date:</strong> ${startDate}</p>
+                        <p style="margin: 5px 0;"><strong>End Date:</strong> ${endDate}</p>
+                        <p style="margin: 5px 0;"><strong>Amount:</strong> $${price.unit_amount / 100} ${price.currency.toUpperCase()}</p>
+                        <p style="margin: 5px 0;"><strong>Status:</strong> Active</p>
                     </div>
-                    <p>You can view or manage your billing at any time via your <a href="https://wellnexai.com/dashboard" style="color: #007bff; text-decoration: none;">Dashboard</a>.</p>
-                    <p>Questions? Email <a href="mailto:support@wellnexai.com" style="color: #007bff; text-decoration: none;">support@wellnexai.com</a></p>
-                    <p>Thanks for being part of the WellnexAI community!</p>
+                    <p>Thank you for continuing with WellnexAI!</p>
+                    <p>– The WellnexAI Team</p>
                 </div>
             `
         });
 
         return {
-            subscriptionId: subscription.id,
-            clientSecret: clientSecret,
-            isNewCard: !isDuplicate
+            success: true,
+            message: 'Subscription renewed successfully after special offer',
+            subscription: newSubscription,
+            clientSecret,
+            requiresAction: latestInvoice.payment_intent && latestInvoice.payment_intent.status === 'requires_action'
         };
     } catch (error) {
-        console.error('Error in renewSubscriptionAfterSpecialOffer:', error);
-        throw new Error(`Failed to renew subscription: ${error.message}`);
+        console.error('Error renewing subscription after special offer:', error);
+        throw new Error(`Error renewing subscription: ${error.message}`);
     }
 };
 
@@ -1409,7 +1605,6 @@ export const getPaymentListHandler = async (filter = {}, limit = 10, offset = 0)
 
 export const updateSubscriptionStatusHandler = async (subscriptionId, status) => {
     try {
-        console.log(subscriptionId, "subscriptionIda", status);
         // Find the subscription in our database
         const subscription = await Subscription.findOne({
             stripeSubscriptionId: subscriptionId
@@ -1436,36 +1631,6 @@ export const updateSubscriptionStatusHandler = async (subscriptionId, status) =>
             throw new Error(`Invalid subscription status. Must be one of: ${validStatuses.join(', ')}`);
         }
 
-        // Check if this is a special offer subscription
-        const isSpecialOffer = subscriptionId.startsWith('special_');
-
-        if (isSpecialOffer) {
-            // For special offer subscriptions, only update the database
-            const updatedSubscription = await Subscription.findOneAndUpdate(
-                { stripeSubscriptionId: subscriptionId },
-                {
-                    status: status === 'canceledImmediately' ? 'canceled' : status,
-                    // For canceled status, set currentPeriodEnd to now
-                    currentPeriodEnd: status === 'canceled' ? new Date() : subscription.currentPeriodEnd,
-                    cancelAtPeriodEnd: status === 'canceled'
-                },
-                { new: true, runValidators: true }
-            );
-
-            if (!updatedSubscription) {
-                throw new Error('Failed to update special offer subscription in database');
-            }
-
-            return {
-                id: updatedSubscription._id,
-                stripeSubscriptionId: updatedSubscription.stripeSubscriptionId,
-                status: updatedSubscription.status,
-                currentPeriodStart: updatedSubscription.currentPeriodStart,
-                currentPeriodEnd: updatedSubscription.currentPeriodEnd,
-                cancelAtPeriodEnd: updatedSubscription.cancelAtPeriodEnd
-            };
-        }
-        console.log(subscription, "subscription", status);
 
         let stripeSubscription;
 
@@ -1540,7 +1705,6 @@ export const updateSubscriptionStatusHandler = async (subscriptionId, status) =>
         if (stripeSubscription.pause_collection && stripeSubscription.pause_collection.behavior === 'mark_uncollectible') {
             actualStatus = 'paused';
         }
-        console.log(actualStatus, "actualStatus", stripeSubscription);
 
         // Update subscription in our database with all relevant fields
         const updatedSubscription = await Subscription.findOneAndUpdate(
@@ -1617,7 +1781,6 @@ export const getActiveSubscriptionDetails = async (userId) => {
         const subscription = await Subscription.find({
             userId,
             $or: [
-                { specialOfferExpiry: { $gt: new Date() } },
                 {
                     $and: [
                         { currentPeriodStart: { $lt: new Date() } },
@@ -1626,7 +1789,6 @@ export const getActiveSubscriptionDetails = async (userId) => {
                 }
             ]
         }).sort({ createdAt: -1 });
-        console.log(subscription.find(s => s.userId === userId), "subscription");
         if (!subscription || subscription.length === 0) {
             throw new Error('No active subscription found');
         }
@@ -1668,16 +1830,6 @@ export const getLatestSubscriptionStatusCounts = async () => {
                 currentPeriodStart: { $lt: new Date() },
             }).sort({ createdAt: 1 });
 
-            // If no active subscription found, look for a valid special offer
-            if (!latestSubscription) {
-                latestSubscription = await Subscription.findOne({
-                    userId,
-                    status: { $in: ['active', 'trialing', 'canceled', 'paused'] },
-                    specialOfferExpiry: { $gt: new Date() }
-                }).sort({ createdAt: 1 });
-            }
-
-            console.log(latestSubscription.status, "latestSubscription", latestSubscription.userId, latestSubscription.currentPeriodEnd, latestSubscription.currentPeriodStart);
             if (latestSubscription) {
                 switch (latestSubscription.status) {
                     case 'active':
@@ -1696,7 +1848,6 @@ export const getLatestSubscriptionStatusCounts = async () => {
                 }
             }
         }
-        console.log(counts, "counts");
         return counts;
     } catch (error) {
         console.error('Error getting subscription status counts:', error);

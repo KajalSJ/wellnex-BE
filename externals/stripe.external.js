@@ -192,6 +192,14 @@ const stripe = Stripe(config.STRIPE_KEY),
       return err;
     }
   },
+  retrieveCoupon = async (couponId) => {
+    try {
+      let data = await stripe.coupons.retrieve(couponId);
+      return data;
+    } catch (err) {
+      return err;
+    }
+  },
   stripeExternal = {
     retrievePrice,
     createPayMethod,
@@ -212,5 +220,6 @@ const stripe = Stripe(config.STRIPE_KEY),
     createToken,
     createPaymentIntents,
     detachPaymentMethod,
+    retrieveCoupon,
   };
 export default stripeExternal;

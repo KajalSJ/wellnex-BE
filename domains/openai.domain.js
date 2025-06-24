@@ -29,15 +29,6 @@ export const getChatBotDetail = async (req, res) => {
                 currentPeriodEnd: { $gte: new Date() }
             }).sort({ createdAt: 1 });
 
-            // If no active subscription found, look for a valid special offer
-            if (!subscription) {
-                subscription = await Subscription.findOne({
-                    userId: businessId,
-                    status: { $in: ['active', 'trialing', 'canceled', 'paused'] },
-                    specialOfferExpiry: { $gt: new Date() }
-                }).sort({ createdAt: 1 });
-            }
-
             // Active subscription
             send200(res, {
                 status: true,

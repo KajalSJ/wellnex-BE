@@ -1,6 +1,5 @@
 import contactUs from "../models/contactUs.js";
 import awsEmailExternal from "../externals/send.email.external.js";
-import adminService from "./admin.service.js";
 
 const { sendingMail } = awsEmailExternal;
 

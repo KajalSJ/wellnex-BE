@@ -206,17 +206,7 @@ const adminSignup = [
               userId: business._id,
               status: { $in: ['active', 'trialing', 'canceled', 'paused'] },
               currentPeriodStart: { $lt: new Date() },
-            }).sort({ createdAt: 1 });
-
-            // If no active subscription found, look for a valid special offer
-            if (!subscriptionDetail) {
-              subscriptionDetail = await Subscription.findOne({
-                userId: business._id,
-                status: { $in: ['active', 'trialing', 'canceled', 'paused'] },
-                specialOfferExpiry: { $gt: new Date() }
-              }).sort({ createdAt: 1 });
-            }
-            console.log(subscriptionDetail.userId, subscriptionDetail?.currentPeriodEnd, "subscriptionDetail", new Date());
+            }).sort({ createdAt: -1 });
 
             return {
               ...business._doc,

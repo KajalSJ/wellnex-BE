@@ -13,7 +13,7 @@ const openaiRouter = Router()
 // Store active chat sessions
 const activeSessions = new Map()
 
-// Start a new chat session - UNCHANGED
+// Start a new chat session
 openaiRouter.post("/start-chat", async (req, res) => {
   try {
     const { businessId, isRestart } = req.body
@@ -38,14 +38,6 @@ openaiRouter.post("/start-chat", async (req, res) => {
       currentPeriodStart: { $lt: new Date() },
       currentPeriodEnd: { $gte: new Date() },
     }).sort({ createdAt: 1 })
-
-    if (!subscription) {
-      subscription = await Subscription.findOne({
-        userId: businessId,
-        status: { $in: ["active", "trialing", "canceled", "paused"] },
-        specialOfferExpiry: { $gt: new Date() },
-      }).sort({ createdAt: 1 })
-    }
 
     const cancelledSubscription = await Subscription.findOne({
       userId: businessId,
@@ -183,7 +175,7 @@ Respond with JSON:
     const result = JSON.parse(response.choices[0].message.content)
 
     return {
-      wantsToEnd: result.wantsToEnd && result.confidence > 85, // Even higher threshold
+      wantsToEnd: result.wantsToEnd && result.confidence > 85,
       confidence: result.confidence,
       reasoning: result.reasoning,
     }
@@ -197,18 +189,18 @@ Respond with JSON:
   }
 }
 
-// ULTRA-ROBUST: Precise conversation classifier with strict rules
-async function classifyUserInput(userInput, session, currentQuestion, openai) {
+// UNIVERSAL ROBUST CLASSIFICATION SYSTEM
+async function classifyUserInputUniversal(userInput, session, currentQuestion, openai) {
   const conversationHistory = session.structuredAnswers
     .map((qa, i) => `Q${i + 1}: ${qa.question}\nA${i + 1}: ${qa.answer}`)
     .join("\n")
 
-  const classificationPrompt = `You are a PRECISE conversation classifier for a ${session.businessType} business called "${session.businessName}".
+  const classificationPrompt = `You are a UNIVERSAL conversation classifier that works for ANY business type using CONTEXT-AWARE validation.
 
 BUSINESS CONTEXT:
-Available Services: ${session.services.map((s) => `- ${s.name}`).join("\n")}
 Business Type: ${session.businessType}
-Business Keywords: ${session.keywords.join(", ") || "General business services"}
+Business Name: ${session.businessName}
+Available Services: ${session.services.map((s) => `- ${s.name}`).join("\n")}
 
 CURRENT QUESTION: "${currentQuestion}"
 USER INPUT: "${userInput}"
@@ -216,234 +208,270 @@ USER INPUT: "${userInput}"
 CONVERSATION HISTORY:
 ${conversationHistory || "This is the first interaction"}
 
-CRITICAL CLASSIFICATION RULES:
+UNIVERSAL THREE-LAYER VALIDATION:
 
-1. **DIRECT_ANSWER**: User directly answers the current question with a specific choice/preference
-   ✅ Q: "What service?" A: "gel manicure" 
-   ✅ Q: "First visit?" A: "yes"
-   ✅ Q: "What time?" A: "2pm" or "afternoon"
+LAYER 1: QUESTION RELEVANCE
+Does the user's response attempt to answer the current question?
+- Q: "What cars do you want?" A: "BMW" → ✅ YES (naming a car)
+- Q: "What food do you like?" A: "pizza" → ✅ YES (naming food)
+- Q: "What's your budget?" A: "50k" → ✅ YES (stating amount)
+- Q: "What cars do you want?" A: "what's the weather?" → ❌ NO (unrelated)
 
-2. **UNCLEAR_ANSWER**: User attempts to answer but is uncertain (STILL AN ANSWER)
-   ✅ Q: "First visit?" A: "yes maybe" or "I think so"
-   ✅ Q: "What time?" A: "I'm flexible" or "not sure"
+LAYER 2: BUSINESS DOMAIN CONTEXT
+Given the business type, does their answer make sense in this domain?
 
-3. **ASKING_FOR_HELP**: User asks for recommendations/information (NOT AN ANSWER - DON'T ADVANCE)
-   ❌ Q: "What service?" A: "what do you think is the best?" → ASKING_FOR_HELP
-   ❌ Q: "What time?" A: "what time are you available?" → ASKING_FOR_HELP  
-   ❌ Q: "What service?" A: "what do you recommend?" → ASKING_FOR_HELP
-   ❌ Q: "What time?" A: "when are you open?" → ASKING_FOR_HELP
+BUSINESS DOMAIN EXAMPLES:
+- Car Business + Answer: "BMW/Toyota/sedan/SUV/creta/verna" → ✅ RELEVANT
+- Restaurant + Answer: "pizza/burger/Italian food" → ✅ RELEVANT  
+- Salon + Answer: "haircut/facial/manicure" → ✅ RELEVANT
+- Real Estate + Answer: "2BHK/apartment/villa" → ✅ RELEVANT
+- Healthcare + Answer: "headache/fever/checkup" → ✅ RELEVANT
 
-4. **DOMAIN_QUESTION**: User asks about business services/info (NOT AN ANSWER - DON'T ADVANCE)
-   ❌ "what services do you have?"
-   ❌ "do you do facials?"
-   ❌ "what are your prices?"
+LAYER 3: INTENT CLASSIFICATION
+What is the user trying to do?
 
-5. **DOMAIN_RELATED**: User mentions domain but doesn't answer (NOT AN ANSWER - DON'T ADVANCE)
-   ❌ "I need something for my nails"
-   ❌ "I want to look good"
+INTENT CATEGORIES:
+1. **DIRECT_ANSWER**: Layers 1 ✅ + 2 ✅ (ADVANCE)
+   - Answering question + relevant to business domain
 
-6. **OFF_DOMAIN**: Completely unrelated (NOT AN ANSWER - DON'T ADVANCE)
-   ❌ "what's the weather?"
+2. **UNCLEAR_ANSWER**: Layers 1 ✅ + 2 ✅ but uncertain (ADVANCE)
+   - "I'm not sure" / "maybe" / "flexible" but still relevant
 
-7. **GREETING**: Social interaction (NOT AN ANSWER - DON'T ADVANCE)
-   ❌ "hello", "hi there"
+3. **ASKING_FOR_HELP**: Layer 1 ❌ - seeking guidance (DON'T ADVANCE)
+   - "what do you recommend?" / "what's available?" / "help me choose"
 
-KEY DISTINCTION FOR QUESTIONS:
-- If user asks "what do you recommend?" → ASKING_FOR_HELP (they want help choosing)
-- If user asks "do you have evening slots?" → ASKING_FOR_HELP (they want information)
-- If user says "I prefer evenings" → DIRECT_ANSWER (they stated preference)
+4. **BUSINESS_QUESTION**: Layer 1 ❌ - asking about business (DON'T ADVANCE)
+   - "what are your prices?" / "what services do you have?"
 
-ONLY ADVANCE QUESTION FOR: DIRECT_ANSWER, UNCLEAR_ANSWER
-NEVER ADVANCE FOR: ASKING_FOR_HELP, DOMAIN_QUESTION, DOMAIN_RELATED, OFF_DOMAIN, GREETING
+5. **DOMAIN_MISMATCH**: Layer 1 ✅ + Layer 2 ❌ (DON'T ADVANCE)
+   - Answers question but wrong domain (car business + "pizza")
+
+6. **OFF_TOPIC**: Layer 1 ❌ - completely unrelated (DON'T ADVANCE)
+   - Weather, politics, random topics
+
+7. **GREETING**: Layer 1 ❌ - social interaction (DON'T ADVANCE)
+   - "hello" / "hi" / "how are you"
+
+CRITICAL EXAMPLES FOR ROBUSTNESS:
+
+Car Business:
+- Q: "What cars?" A: "BMW" → DIRECT_ANSWER ✅ (car model in car business)
+- Q: "What cars?" A: "creta" → DIRECT_ANSWER ✅ (car model in car business)
+- Q: "What cars?" A: "verna" → DIRECT_ANSWER ✅ (car model in car business)
+- Q: "What cars?" A: "pizza" → DOMAIN_MISMATCH ❌ (food in car business)
+- Q: "Budget?" A: "50 lakhs" → DIRECT_ANSWER ✅ (money amount for budget)
+- Q: "Budget?" A: "14lakh" → DIRECT_ANSWER ✅ (money amount for budget)
+
+Restaurant:
+- Q: "What food?" A: "pizza" → DIRECT_ANSWER ✅ (food item in restaurant)
+- Q: "What food?" A: "BMW" → DOMAIN_MISMATCH ❌ (car in restaurant)
+
+Salon:
+- Q: "What service?" A: "haircut" → DIRECT_ANSWER ✅ (beauty service in salon)
+- Q: "What service?" A: "car wash" → DOMAIN_MISMATCH ❌ (car service in salon)
+
+UNIVERSAL RULES:
+- If user answers the question AND it fits the business domain → ADVANCE
+- If user asks for help/info OR answer doesn't fit domain → DON'T ADVANCE
+- Business domain is determined by business type, NOT service list
+- Focus on CONTEXTUAL RELEVANCE, not exact service matching
+
+ONLY ADVANCE FOR: DIRECT_ANSWER, UNCLEAR_ANSWER
 
 Respond with JSON:
 {
-  "category": "DIRECT_ANSWER|UNCLEAR_ANSWER|ASKING_FOR_HELP|DOMAIN_QUESTION|DOMAIN_RELATED|OFF_DOMAIN|GREETING",
+  "category": "DIRECT_ANSWER|UNCLEAR_ANSWER|ASKING_FOR_HELP|BUSINESS_QUESTION|DOMAIN_MISMATCH|OFF_TOPIC|GREETING",
   "confidence": 0-100,
-  "reasoning": "detailed explanation of why this classification was chosen",
-  "shouldAdvanceQuestion": true/false,
+  "layerOneResult": {
+    "answersQuestion": true/false,
+    "reasoning": "does this attempt to answer the current question?"
+  },
+  "layerTwoResult": {
+    "fitsBusinessDomain": true/false,
+    "domainReasoning": "does this answer make sense for a [business type] business?",
+    "contextualRelevance": "explanation of domain fit"
+  },
+  "layerThreeResult": {
+    "userIntent": "what is the user trying to accomplish?",
+    "shouldAdvance": true/false
+  },
   "extractedInfo": {
-    "mentionedServices": ["any services mentioned"],
-    "userIntent": "what the user seems to want",
-    "isAskingForHelp": true/false,
-    "interpretedAnswer": "how to interpret their response as an answer if applicable"
-  }
+    "mentionedItems": ["any specific items/services/products mentioned"],
+    "userPreference": "what the user seems to prefer",
+    "interpretedAnswer": "clean version of their answer"
+  },
+  "reasoning": "overall classification explanation with layer analysis"
 }`
 
   try {
     const response = await openai.chat.completions.create({
       model: "gpt-4o",
-      temperature: 0.05, // Very low temperature for consistency
-      max_tokens: 600,
+      temperature: 0.1,
+      max_tokens: 800,
       messages: [{ role: "user", content: classificationPrompt }],
       response_format: { type: "json_object" },
     })
 
     const result = JSON.parse(response.choices[0].message.content)
 
-    // SAFETY CHECK: Never advance for help-seeking questions
-    if (result.category === "ASKING_FOR_HELP" || result.extractedInfo?.isAskingForHelp) {
-      result.shouldAdvanceQuestion = false
-    }
+    // Universal validation: Only advance if all layers pass
+    const shouldAdvance =
+      result.layerOneResult?.answersQuestion &&
+      result.layerTwoResult?.fitsBusinessDomain &&
+      ["DIRECT_ANSWER", "UNCLEAR_ANSWER"].includes(result.category)
+
+    result.shouldAdvanceQuestion = shouldAdvance
 
     return result
   } catch (error) {
-    console.error("Error classifying user input:", error)
+    console.error("Error in universal classification:", error)
     return {
       category: "ASKING_FOR_HELP",
       confidence: 50,
-      reasoning: "Error in classification - defaulting to asking for help to be safe",
+      layerOneResult: { answersQuestion: false, reasoning: "Error in analysis" },
+      layerTwoResult: { fitsBusinessDomain: false, domainReasoning: "Error", contextualRelevance: "Error" },
+      layerThreeResult: { userIntent: "unclear", shouldAdvance: false },
       shouldAdvanceQuestion: false,
-      extractedInfo: {
-        mentionedServices: [],
-        userIntent: "unclear",
-        isAskingForHelp: true,
-        interpretedAnswer: userInput,
-      },
+      extractedInfo: { mentionedItems: [], userPreference: "unclear", interpretedAnswer: userInput },
+      reasoning: "Error in classification - defaulting to safe option",
     }
   }
 }
 
-// ENHANCED: Contextual response generator with better help responses
-async function generateContextualResponse(classification, userInput, session, currentQuestion, openai) {
+// FIXED: Enhanced response generator - NO DUPLICATE QUESTIONS
+async function generateUniversalResponse(classification, userInput, session, currentQuestion, openai) {
   let responsePrompt = ""
 
   switch (classification.category) {
     case "ASKING_FOR_HELP":
       responsePrompt = `User is asking for help: "${userInput}" in response to question: "${currentQuestion}"
 
-BUSINESS INFO:
+BUSINESS CONTEXT:
+Business Type: ${session.businessType}
 Services: ${session.services.map((s) => s.name).join(", ")}
 Business Name: ${session.businessName}
-Business Type: ${session.businessType}
-
-IMPORTANT RULES:
-- NEVER provide fake time slots, staff names, or specific details not in the business data
-- For scheduling questions: redirect to "our team will coordinate scheduling"
-- For staff questions: mention "experienced professionals" without fake names
-- For service questions: use only the actual services listed
-
-CONTEXT EXAMPLES:
-- Q: "What service?" A: "what do you think is best?" → Recommend from actual services list
-- Q: "What time?" A: "what time are you available?" → "Our team will coordinate scheduling with you"
-- Q: "What service?" A: "what do you recommend?" → Suggest from actual services only
 
 Generate a helpful response that:
-1. Uses ONLY real business information (services list)
-2. For scheduling/staff: redirects to "our team will coordinate with you"
-3. Provides 2-3 concrete options from actual services
-4. Guides them toward making a choice from real options
-5. NEVER mentions fake times, staff names, or unavailable services
+1. Acknowledges their request for help
+2. Provides relevant options based on business type and services
+3. Guides them to make a choice
+4. DOES NOT repeat the question (it will be asked separately)
 
-Keep it helpful and honest. Respond with just the message text (no JSON).`
+For a ${session.businessType} business, provide helpful guidance without making up specific details.
+
+Example: "We offer [actual services]. Which of these interests you most?"
+
+IMPORTANT: Do NOT include the question "${currentQuestion}" in your response.
+
+Respond with just the message text (no JSON).`
       break
 
     case "UNCLEAR_ANSWER":
-      responsePrompt = `User gave an uncertain answer: "${userInput}" to question: "${currentQuestion}"
+      responsePrompt = `User gave an uncertain but relevant answer: "${userInput}" to question: "${currentQuestion}"
 
-Generate a brief acknowledgment that:
-1. Accepts their uncertainty positively
-2. Shows we understand their response
-3. Transitions naturally to next question
+Generate a brief, positive acknowledgment that:
+1. Accepts their uncertainty
+2. Shows understanding
+3. Transitions to next question
 
-Examples:
-- "No worries at all! I understand you're not completely sure."
-- "That's perfectly fine - we'll work with that."
-- "Got it! We can definitely help with that."
+Examples: "No worries! We can work with that." or "That's perfectly fine."
 
 Keep it SHORT and positive. Respond with just the message text (no JSON).`
       break
 
-    case "DOMAIN_QUESTION":
+    case "BUSINESS_QUESTION":
       responsePrompt = `User asked: "${userInput}" about our ${session.businessType} business.
 
 BUSINESS INFO:
 Services: ${session.services.map((s) => s.name).join(", ")}
 Business Name: ${session.businessName}
-Current Question: "${currentQuestion}"
-
-IMPORTANT: Only provide information that exists in the business data. For scheduling, staff, or pricing questions, redirect to "our team will provide those details."
 
 Generate a helpful response that:
-1. Answers their question using ONLY available business data
-2. For unavailable info: "Our team will provide those specific details"
-3. Naturally transitions back to the consultation
-4. Asks them to answer the current question
+1. Answers using available business information
+2. For specific details: "Our team will provide those details"
+3. Transitions back to consultation
+4. DOES NOT repeat the question (it will be asked separately)
 
-Example: "We offer [actual services from list]. Our team will coordinate scheduling details with you. Now, ${currentQuestion.toLowerCase()}"
+Example: "We offer [services]. Our team will provide specific details."
 
-Respond with just the message text (no JSON).`
-      break
-
-    case "DOMAIN_RELATED":
-      responsePrompt = `User said: "${userInput}" which is related to our ${session.businessType} business but doesn't directly answer: "${currentQuestion}"
-
-BUSINESS INFO:
-Services: ${session.services.map((s) => s.name).join(", ")}
-Mentioned Services: ${classification.extractedInfo.mentionedServices.join(", ") || "none"}
-
-Generate a response that:
-1. Acknowledges what they said
-2. Connects it to our services if possible
-3. Guides back to the consultation naturally
-4. Asks the current question
-
-Example: "I understand you're interested in [topic]. We have [relevant services]. ${currentQuestion}"
+IMPORTANT: Do NOT include the question "${currentQuestion}" in your response.
 
 Respond with just the message text (no JSON).`
       break
 
-    case "OFF_DOMAIN":
-      responsePrompt = `User asked about something unrelated: "${userInput}" 
+    case "DOMAIN_MISMATCH":
+      responsePrompt = `User answered: "${userInput}" but it doesn't fit our ${session.businessType} business domain.
+
+Current question: "${currentQuestion}"
+Layer analysis: ${classification.reasoning}
+
+Generate a friendly response that:
+1. Acknowledges their response politely
+2. Explains we specialize in ${session.businessType}
+3. Redirects to our business domain
+4. DOES NOT repeat the question (it will be asked separately)
+
+Example: "I understand, but we specialize in ${session.businessType} services."
+
+IMPORTANT: Do NOT include the question "${currentQuestion}" in your response.
+
+Respond with just the message text (no JSON).`
+      break
+
+    case "OFF_TOPIC":
+      responsePrompt = `User said something unrelated: "${userInput}"
 
 Our business: ${session.businessType} called ${session.businessName}
 Current question: "${currentQuestion}"
 
 Generate a polite response that:
-1. Politely declines to help with unrelated topics
-2. Redirects back to our business services
-3. Maintains friendly tone
-4. Asks the current consultation question
+1. Politely redirects to our business
+2. Maintains friendly tone
+3. DOES NOT repeat the question (it will be asked separately)
 
-Example: "I'm a [business type] assistant and can only help with our services. ${currentQuestion}"
+Example: "I'm here to help with ${session.businessType} services."
+
+IMPORTANT: Do NOT include the question "${currentQuestion}" in your response.
 
 Respond with just the message text (no JSON).`
       break
 
     case "GREETING":
-      responsePrompt = `User greeted with: "${userInput}"
+      responsePrompt = `User greeted: "${userInput}"
 Current question: "${currentQuestion}"
 
-Generate a friendly response that:
-1. Acknowledges their greeting warmly
-2. Transitions back to the consultation
-3. Asks the current question naturally
+Generate a warm response that:
+1. Acknowledges greeting
+2. Transitions to consultation
+3. DOES NOT repeat the question (it will be asked separately)
 
-Example: "Hello! Nice to meet you. ${currentQuestion}"
+Example: "Hello! Nice to meet you."
+
+IMPORTANT: Do NOT include the question "${currentQuestion}" in your response.
 
 Respond with just the message text (no JSON).`
       break
 
     default:
-      return `Thank you for your response. ${currentQuestion}`
+      return "Thank you for your response."
   }
 
   try {
     const response = await openai.chat.completions.create({
       model: "gpt-4o",
       temperature: 0.3,
-      max_tokens: 250,
+      max_tokens: 200,
       messages: [{ role: "user", content: responsePrompt }],
     })
 
     return response.choices[0].message.content.trim()
   } catch (error) {
-    console.error("Error generating contextual response:", error)
-    return `Thank you for your response. ${currentQuestion}`
+    console.error("Error generating universal response:", error)
+    return "Thank you for your response."
   }
 }
 
-// ULTRA-ROBUST: Submit answer with strict advancement rules
+// Submit answer and get next question - ENHANCED with universal classification
 openaiRouter.post("/submit-answer", async (req, res) => {
   try {
     const { sessionId, answer } = req.body
@@ -456,7 +484,7 @@ openaiRouter.post("/submit-answer", async (req, res) => {
     if (session.phase === "structured_questions") {
       const currentQuestion = session.questions[session.currentQuestionIndex].name
 
-      // Smart exit detection with higher threshold
+      // Smart exit detection
       console.log("=== SMART EXIT DETECTION ===")
       const exitCheck = await checkIfUserWantsToEnd(answer, session, currentQuestion, openai)
 
@@ -464,7 +492,6 @@ openaiRouter.post("/submit-answer", async (req, res) => {
 
       if (exitCheck.wantsToEnd) {
         console.log("=== ENDING CONVERSATION - AI DETECTED EXIT INTENT ===")
-        // DON'T delete session yet - let handle-consultation-choice handle it
         session.phase = "awaiting_choice"
         return res.json({
           sessionId,
@@ -490,46 +517,41 @@ openaiRouter.post("/submit-answer", async (req, res) => {
         })
       }
 
-      // ULTRA-PRECISE conversation classification
-      console.log("=== ULTRA-PRECISE CLASSIFICATION ===")
+      // UNIVERSAL CLASSIFICATION
+      console.log("=== UNIVERSAL THREE-LAYER CLASSIFICATION ===")
       console.log("User input:", answer)
       console.log("Current question:", currentQuestion)
+      console.log("Business type:", session.businessType)
 
-      const classification = await classifyUserInput(answer, session, currentQuestion, openai)
+      const classification = await classifyUserInputUniversal(answer, session, currentQuestion, openai)
 
       console.log("=== CLASSIFICATION RESULT ===")
       console.log("Category:", classification.category)
       console.log("Confidence:", classification.confidence)
+      console.log("Layer 1 - Answers Question:", classification.layerOneResult?.answersQuestion)
+      console.log("Layer 2 - Fits Business Domain:", classification.layerTwoResult?.fitsBusinessDomain)
+      console.log("Layer 3 - Should Advance:", classification.layerThreeResult?.shouldAdvance)
       console.log("Should advance question:", classification.shouldAdvanceQuestion)
-      console.log("Is asking for help:", classification.extractedInfo?.isAskingForHelp)
-      console.log("Reasoning:", classification.reasoning)
+      console.log("Domain reasoning:", classification.layerTwoResult?.domainReasoning)
 
-      // Update conversation context with extracted info
-      if (classification.extractedInfo.mentionedServices.length > 0) {
+      // Update conversation context
+      if (classification.extractedInfo.mentionedItems.length > 0) {
         session.conversationContext.mentionedServices = [
           ...new Set([
             ...session.conversationContext.mentionedServices,
-            ...classification.extractedInfo.mentionedServices,
+            ...classification.extractedInfo.mentionedItems,
           ]),
         ]
       }
 
-      // STRICT RULE: Only advance for DIRECT_ANSWER and UNCLEAR_ANSWER
-      const shouldAdvanceCategories = ["DIRECT_ANSWER", "UNCLEAR_ANSWER"]
-
-      if (shouldAdvanceCategories.includes(classification.category) && classification.shouldAdvanceQuestion) {
-        console.log(`=== ${classification.category} - ADVANCING TO NEXT QUESTION ===`)
+      // UNIVERSAL ADVANCEMENT: Only advance if all three layers pass
+      if (classification.shouldAdvanceQuestion) {
+        console.log(`=== ${classification.category} - ALL LAYERS PASSED - ADVANCING ===`)
 
         // Generate contextual response for unclear answers
         let contextualResponse = ""
         if (classification.category === "UNCLEAR_ANSWER") {
-          contextualResponse = await generateContextualResponse(
-            classification,
-            answer,
-            session,
-            currentQuestion,
-            openai,
-          )
+          contextualResponse = await generateUniversalResponse(classification, answer, session, currentQuestion, openai)
         }
 
         // Store the answer and advance
@@ -537,14 +559,21 @@ openaiRouter.post("/submit-answer", async (req, res) => {
           question: currentQuestion,
           answer: answer,
           interpretedAnswer: classification.extractedInfo.interpretedAnswer || answer,
-          contextualInfo: classification.extractedInfo,
+          contextualInfo: {
+            ...classification.extractedInfo,
+            validationLayers: {
+              answersQuestion: classification.layerOneResult?.answersQuestion,
+              fitsBusinessDomain: classification.layerTwoResult?.fitsBusinessDomain,
+              domainReasoning: classification.layerTwoResult?.domainReasoning,
+              userIntent: classification.layerThreeResult?.userIntent,
+            },
+          },
         })
 
         session.currentQuestionIndex++
 
         // Check if completed all questions
         if (session.currentQuestionIndex >= session.questions.length) {
-          // DON'T delete session yet - let handle-consultation-choice handle it
           session.phase = "awaiting_choice"
 
           const finalResponsePrompt = `A customer has completed our consultation process. Here's their information:
@@ -557,7 +586,7 @@ Business Type: ${session.businessType}
 Business Name: ${session.businessName}
 
 CONVERSATION INSIGHTS:
-- Services they showed interest in: ${session.conversationContext.mentionedServices.join(", ") || "None specific"}
+- Items they showed interest in: ${session.conversationContext.mentionedServices.join(", ") || "None specific"}
 
 Provide a natural conclusion that thanks them and acknowledges completion.`
 
@@ -601,7 +630,6 @@ Provide a natural conclusion that thanks them and acknowledges completion.`
         const nextQuestion = session.questions[session.currentQuestionIndex].name
         const messages = []
 
-        // Add contextual response if generated
         if (contextualResponse) {
           messages.push({
             type: "contextual_response",
@@ -609,7 +637,6 @@ Provide a natural conclusion that thanks them and acknowledges completion.`
           })
         }
 
-        // Add transition and next question
         const friendlyTransitions = [
           "Perfect! Next question:",
           "Great! Let me ask you:",
@@ -640,10 +667,11 @@ Provide a natural conclusion that thanks them and acknowledges completion.`
           },
         })
       } else {
-        // Handle categories that DON'T advance (ASKING_FOR_HELP, DOMAIN_QUESTION, etc.)
-        console.log(`=== HANDLING ${classification.category} - NOT ADVANCING QUESTION ===`)
+        // FIXED: Handle responses that don't pass all layers - NO DUPLICATE QUESTIONS
+        console.log(`=== HANDLING ${classification.category} - LAYER VALIDATION FAILED ===`)
+        console.log("Providing contextual response and asking same question")
 
-        const contextualResponse = await generateContextualResponse(
+        const contextualResponse = await generateUniversalResponse(
           classification,
           answer,
           session,
@@ -651,15 +679,19 @@ Provide a natural conclusion that thanks them and acknowledges completion.`
           openai,
         )
 
-        console.log("Generated response:", contextualResponse)
-
-        // Return contextual response + current question (DON'T advance)
+        // FIXED: Return ONLY contextual response + question (no duplication)
         return res.json({
           sessionId,
           messages: [
             {
               type: "contextual_response",
               content: contextualResponse,
+            },
+            {
+              type: "question",
+              content: currentQuestion,
+              questionNumber: session.currentQuestionIndex + 1,
+              totalQuestions: session.questions.length,
             },
           ],
           progress: {
@@ -675,7 +707,8 @@ Provide a natural conclusion that thanks them and acknowledges completion.`
       messages: [
         {
           type: "info",
-          content: "I'm not sure how to help with that. Our specialists may be able to help you. Would you like to share your details?",
+          content:
+            "I'm not sure how to help with that. Our specialists may be able to help you. Would you like to share your details?",
         },
       ],
       isComplete: true,
@@ -698,7 +731,7 @@ Provide a natural conclusion that thanks them and acknowledges completion.`
   }
 })
 
-// UPDATED: Handle consultation choice - now handles session cleanup
+// Handle consultation choice
 openaiRouter.post("/handle-consultation-choice", async (req, res) => {
   try {
     const { sessionId, choice } = req.body
@@ -750,7 +783,7 @@ openaiRouter.post("/handle-consultation-choice", async (req, res) => {
         ],
       })
     } else if (choice === "decline" || choice === "No, thanks") {
-      // Clean up session
+      console.log("=== USER DECLINED TO SHARE DETAILS ===")
       activeSessions.delete(sessionId)
       return res.json({
         message: "Thank you for your time! Feel free to reach out if you have any questions in the future.",
@@ -758,7 +791,6 @@ openaiRouter.post("/handle-consultation-choice", async (req, res) => {
       })
     } else if (choice === "start_new") {
       console.log("=== USER WANTS TO START NEW CONSULTATION ===")
-      // Clean up current session
       activeSessions.delete(sessionId)
       return res.json({
         message: "Starting a new consultation...",
@@ -775,6 +807,7 @@ openaiRouter.post("/handle-consultation-choice", async (req, res) => {
   }
 })
 
+// Store lead information
 openaiRouter.post("/store-lead", async (req, res) => {
   try {
     const { sessionId, formData } = req.body
@@ -799,7 +832,6 @@ openaiRouter.post("/store-lead", async (req, res) => {
     const business = await businessModel.findById(session.businessId)
     const emailSent = await sendLeadNotification(lead, business)
 
-    // Clean up session after storing lead
     activeSessions.delete(sessionId)
 
     res.json({
@@ -823,7 +855,7 @@ export const sendLeadNotification = async (lead, business) => {
       ? `
       <h3>Conversation Insights:</h3>
       <ul>
-        <li><strong>Services of Interest:</strong> ${lead.conversationContext.mentionedServices?.join(", ") || "None specific"}</li>
+        <li><strong>Items of Interest:</strong> ${lead.conversationContext.mentionedServices?.join(", ") || "None specific"}</li>
         <li><strong>User Preferences:</strong> ${JSON.stringify(lead.conversationContext.userPreferences) || "None captured"}</li>
         <li><strong>Conversation Tone:</strong> ${lead.conversationContext.conversationTone || "Neutral"}</li>
         <li><strong>Topics Discussed:</strong> ${lead.conversationContext.previousTopics?.join(", ") || "Standard consultation"}</li>

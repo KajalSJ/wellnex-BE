@@ -56,29 +56,63 @@ const subscriptionSchema = new mongoose.Schema({
         type: String,
         required: true
     },
-    hasReceivedSpecialOffer: {
-        type: Boolean,
-        default: false
+    // Special offer tracking - simplified and improved
+    specialOfferStatus: {
+        type: String,
+        enum: ['none', 'offered', 'applied', 'expired'],
+        default: 'none'
     },
-    specialOfferApplied: {
-        type: Boolean,
-        default: false
+    specialOfferDiscountStart: {
+        type: Date,
+        default: null
+    },
+    specialOfferDiscountEnd: {
+        type: Date,
+        default: null
+    },
+    specialOfferDiscountAppliedAt: {
+        type: Date,
+        default: null
+    },
+    specialOfferCouponId: {
+        type: String,
+        default: null
+    },
+    specialOfferDiscountPercent: {
+        type: Number,
+        default: null
+    },
+    specialOfferDiscountAmount: {
+        type: Number,
+        default: null
+    },
+    specialOfferDiscountDescription: {
+        type: String,
+        default: null
     },
     specialOfferPrice: {
         type: Number,
         default: null
     },
-    specialOfferExpiry: {
-        type: Date,
-        default: null
-    },
     isSpecialOffer: {
         type: Boolean,
         default: false
+    },
+    // Track the original subscription for special offer renewals
+    originalSubscriptionId: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'Subscription',
+        default: null
     }
 }, {
     timestamps: true
 });
+
+// Add indexes for better performance
+subscriptionSchema.index({ userId: 1, status: 1 });
+subscriptionSchema.index({ stripeSubscriptionId: 1 });
+subscriptionSchema.index({ specialOfferStatus: 1, specialOfferDiscountEnd: 1 });
+subscriptionSchema.index({ currentPeriodEnd: 1 });
 
 const Subscription = mongoose.model('Subscription', subscriptionSchema);
 

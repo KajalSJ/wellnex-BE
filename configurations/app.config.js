@@ -21,7 +21,7 @@ const config = {
 
   STRIPE_KEY: process.env.STRIPE_SECRET_KEY,
   USER_PRODUCT_STRIPE_KEY: process.env.USER_PRODUCT_STRIPE_KEY,
-
+  STRIPE_COUPON_KEY: process.env.STRIPE_COUPON_KEY,
   // PROTON_PASSWORD: process.env.PROTON_PASSWORD,
   // PROTON_EMAIL: process.env.PROTON_EMAIL,
   EMAIL_USER: process.env.EMAIL_USER,

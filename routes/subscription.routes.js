@@ -1,12 +1,14 @@
 import express from 'express';
-import { createSubscription, cancelSubscription, getActiveSubscription, getSavedCards, getSubscriptionPlans, removeSavedCard, applySpecialOffer, checkSpecialOfferPrice, getProductPrices, renewSubscriptionAfterSpecialOffer, setDefaultCard, updateCardDetails, updatePreferredCurrency, changeSubscriptionCard } from '../services/subscription.service.js';
+import { createSubscription, cancelSubscription, getSavedCards, getSubscriptionPlans, removeSavedCard, applySpecialOffer, checkSpecialOfferPrice, getProductPrices, renewSubscriptionAfterSpecialOffer, setDefaultCard, updateCardDetails, updatePreferredCurrency, changeSubscriptionCard } from '../services/subscription.service.js';
 import jwtMiddleware from '../middlewares/jwt.middleware.js';
+import subscriptionMiddleware from '../middlewares/subscription.middleware.js';
 import Subscription from '../models/subscription.model.js';
 import businessService from '../services/business.service.js';
+const { verifyToken: jwtAuthGuard } = jwtMiddleware;
+const { checkSubscriptionAccess, checkAnySubscription, checkSubscriptionManagement } = subscriptionMiddleware;
 const { retriveBusiness } = businessService;
 
 const router = express.Router();
-const { verifyToken: jwtAuthGuard } = jwtMiddleware;
 
 // Create subscription
 router.post('/create', jwtAuthGuard, async (req, res) => {
@@ -27,8 +29,8 @@ router.post('/create', jwtAuthGuard, async (req, res) => {
     }
 });
 
-// Cancel subscription
-router.post('/cancel', jwtAuthGuard, async (req, res) => {
+// Cancel subscription - requires subscription management permission
+router.post('/cancel', jwtAuthGuard, checkSubscriptionManagement, async (req, res) => {
     try {
         const result = await cancelSubscription(req.user._id);
         res.json(result);
@@ -37,8 +39,8 @@ router.post('/cancel', jwtAuthGuard, async (req, res) => {
     }
 });
 
-// Get active subscription
-router.get('/status', jwtAuthGuard, async (req, res) => {
+// Get active subscription - requires subscription access
+router.get('/status', jwtAuthGuard, checkSubscriptionAccess, async (req, res) => {
     try {
         let existingBusiness = await retriveBusiness({
             _id: req.user._id,
@@ -46,28 +48,25 @@ router.get('/status', jwtAuthGuard, async (req, res) => {
         if (!existingBusiness) {
             throw new Error('Business not found');
         }
-        // const subscription = await getActiveSubscription(req.user._id);
-        // Get all subscriptions for the business
-        const subscriptions = await Subscription.find({
-            userId: req.user._id
-        }).sort({ currentPeriodStart: 1 });
-        if (subscriptions.length > 0) {
-            // Calculate first subscription start and last subscription end
-            const firstSubscriptionStart = subscriptions.length > 0 ? subscriptions[0].currentPeriodStart : null;
-            const lastSubscriptionEnd = subscriptions.length > 0 ? subscriptions[subscriptions.length - 1].currentPeriodEnd : null;
-console.log(subscriptions);
 
+        // Get the single active or most recent subscription for the business
+        const subscription = await Subscription.findOne({
+            userId: req.user._id
+        }).sort({ currentPeriodEnd: -1 });
+        if (subscription) {
             res.json({
-                ...subscriptions[subscriptions.length - 1]?._doc,
-                currentPeriodStart: firstSubscriptionStart,
-                currentPeriodEnd: lastSubscriptionEnd,
+                ...subscription._doc,
                 email: existingBusiness.email,
+                canAccessDashboard: req.canAccessDashboard,
+                subscriptionType: req.subscriptionType
             });
         } else {
             res.json({
                 currentPeriodStart: null,
                 currentPeriodEnd: null,
                 email: existingBusiness.email,
+                canAccessDashboard: false,
+                subscriptionType: null
             });
         }
     } catch (error) {
@@ -75,8 +74,8 @@ console.log(subscriptions);
     }
 });
 
-// Get saved cards
-router.get('/cards', jwtAuthGuard, async (req, res) => {
+// Get saved cards - requires subscription access
+router.get('/cards', jwtAuthGuard, checkSubscriptionAccess, async (req, res) => {
     try {
         const cards = await getSavedCards(req.user._id);
         res.json(cards);
@@ -84,7 +83,9 @@ router.get('/cards', jwtAuthGuard, async (req, res) => {
         res.status(400).json({ error: error.message });
     }
 });
-router.delete('/cards/:cardId', jwtAuthGuard, async (req, res) => {
+
+// Remove saved card - requires subscription access
+router.delete('/cards/:cardId', jwtAuthGuard, checkSubscriptionAccess, async (req, res) => {
     try {
         const result = await removeSavedCard(req.user._id, req.params.cardId);
         res.json(result);
@@ -94,8 +95,8 @@ router.delete('/cards/:cardId', jwtAuthGuard, async (req, res) => {
     }
 });
 
-// Set default card
-router.post('/cards/:cardId/default', jwtAuthGuard, async (req, res) => {
+// Set default card - requires subscription access
+router.post('/cards/:cardId/default', jwtAuthGuard, checkSubscriptionAccess, async (req, res) => {
     try {
         const result = await setDefaultCard(req.user._id, req.params.cardId);
         res.json(result);
@@ -105,8 +106,8 @@ router.post('/cards/:cardId/default', jwtAuthGuard, async (req, res) => {
     }
 });
 
-// Update card details
-router.put('/cards/:cardId', jwtAuthGuard, async (req, res) => {
+// Update card details - requires subscription access
+router.put('/cards/:cardId', jwtAuthGuard, checkSubscriptionAccess, async (req, res) => {
     try {
         const { exp_month, exp_year, name, email, phone, address } = req.body;
 
@@ -134,7 +135,8 @@ router.put('/cards/:cardId', jwtAuthGuard, async (req, res) => {
     }
 });
 
-router.get('/plans', jwtAuthGuard, async (req, res) => {
+// Get subscription plans - requires any subscription check
+router.get('/plans', jwtAuthGuard, checkAnySubscription, async (req, res) => {
     try {
         const plans = await getSubscriptionPlans(req.user._id);
         res.json(plans);
@@ -143,8 +145,9 @@ router.get('/plans', jwtAuthGuard, async (req, res) => {
         res.status(500).json({ message: 'Error fetching subscription plans' });
     }
 });
-// check-special-offer before cancel subscription
-router.get('/check-special-offer', jwtAuthGuard, async (req, res) => {
+
+// Check special offer - requires subscription management permission
+router.get('/check-special-offer', jwtAuthGuard, checkSubscriptionManagement, async (req, res) => {
     try {
         const result = await checkSpecialOfferPrice(req.user._id);
         res.json(result);
@@ -152,8 +155,9 @@ router.get('/check-special-offer', jwtAuthGuard, async (req, res) => {
         res.status(400).json({ error: error.message });
     }
 });
-// Apply special offer
-router.post('/apply-special-offer', jwtAuthGuard, async (req, res) => {
+
+// Apply special offer - requires subscription management permission
+router.post('/apply-special-offer', jwtAuthGuard, checkSubscriptionManagement, async (req, res) => {
     try {
         const result = await applySpecialOffer(req.user._id);
         res.json(result);
@@ -162,8 +166,8 @@ router.post('/apply-special-offer', jwtAuthGuard, async (req, res) => {
     }
 });
 
-// Get prices for a specific product
-router.get('/products/:productId/prices', jwtAuthGuard, async (req, res) => {
+// Get prices for a specific product - requires subscription access
+router.get('/products/:productId/prices', jwtAuthGuard, checkSubscriptionAccess, async (req, res) => {
     try {
         const prices = await getProductPrices(req.params.productId);
         res.json(prices);
@@ -173,8 +177,8 @@ router.get('/products/:productId/prices', jwtAuthGuard, async (req, res) => {
     }
 });
 
-// Renew subscription after special offer
-router.post('/renew-after-special-offer', jwtAuthGuard, async (req, res) => {
+// Renew subscription after special offer - requires subscription access
+router.post('/renew-after-special-offer', jwtAuthGuard, checkSubscriptionAccess, async (req, res) => {
     try {
         const { paymentMethodId } = req.body;
 
@@ -192,6 +196,7 @@ router.post('/renew-after-special-offer', jwtAuthGuard, async (req, res) => {
     }
 });
 
+// Update preferred currency - requires subscription access
 router.post('/update-preferred-currency', jwtAuthGuard, async (req, res) => {
     try {
         const { currencyId } = req.body;
@@ -207,8 +212,8 @@ router.post('/update-preferred-currency', jwtAuthGuard, async (req, res) => {
     }
 });
 
-// Change subscription card
-router.post('/change-card', jwtAuthGuard, async (req, res) => {
+// Change subscription card - requires subscription management permission
+router.post('/change-card', jwtAuthGuard, checkSubscriptionManagement, async (req, res) => {
     try {
         const { paymentMethodId } = req.body;
 
